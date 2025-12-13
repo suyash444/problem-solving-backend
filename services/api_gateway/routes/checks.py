@@ -10,11 +10,9 @@ from services.position_service.check_handler import CheckHandler
 
 router = APIRouter(prefix="/checks", tags=["Position Checks"])
 
-# Initialize check handler
 check_handler = CheckHandler()
 
 
-# Pydantic models for request validation
 class MarkFoundRequest(BaseModel):
     """Request model for marking position as found"""
     checked_by: str = Field(..., description="Operator who checked", example="Mario")
@@ -37,10 +35,7 @@ class UpdateCheckRequest(BaseModel):
 
 
 @router.post("/{check_id}/found")
-async def mark_position_found(
-    check_id: int,
-    request: MarkFoundRequest
-):
+async def mark_position_found(check_id: int, request: MarkFoundRequest):
     """
     Mark a position check as FOUND
     
@@ -50,15 +45,6 @@ async def mark_position_found(
     3. If all missing qty found, mark item as resolved
     4. Auto-skip remaining positions for this item if resolved
     5. Check if entire mission is complete
-    
-    Example request:
-```json
-    {
-        "checked_by": "Mario",
-        "qty_found": 1,
-        "notes": "Found in correct position"
-    }
-```
     """
     result = check_handler.mark_found(
         check_id=check_id,
@@ -66,56 +52,34 @@ async def mark_position_found(
         qty_found=request.qty_found,
         notes=request.notes
     )
-    
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
-    
-    return {
-        "success": True,
-        "message": result['message'],
-        "data": {
-            "item_resolved": result.get('item_resolved', False),
-            "mission_complete": result.get('mission_complete', False),
-            "qty_found": result.get('qty_found', 0),
-            "total_found_for_item": result.get('total_found_for_item', 0),
-            "qty_still_missing": result.get('qty_still_missing', 0)
-        }
-    }
+
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('message', 'Unknown error'))
+
+    # Return the result directly - it already has the correct structure
+    return result
 
 
 @router.post("/{check_id}/not-found")
-async def mark_position_not_found(
-    check_id: int,
-    request: MarkNotFoundRequest
-):
+async def mark_position_not_found(check_id: int, request: MarkNotFoundRequest):
     """
     Mark a position check as NOT_FOUND
     
     When an item is not found:
     1. Mark this check as NOT_FOUND
     2. Operator continues to next position
-    
-    Example request:
-```json
-    {
-        "checked_by": "Mario",
-        "notes": "Position checked, item not found"
-    }
-```
     """
     result = check_handler.mark_not_found(
         check_id=check_id,
         checked_by=request.checked_by,
         notes=request.notes
     )
-    
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
-    
-    return {
-        "success": True,
-        "message": result['message']
-    }
+
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('message', 'Unknown error'))
+
+    # Return the result directly
+    return result
 
 
 @router.get("/{check_id}")
@@ -125,10 +89,10 @@ async def get_check_details(check_id: int):
     Includes position, UDC, item details, and check status
     """
     details = check_handler.get_check_details(check_id)
-    
+
     if not details:
         raise HTTPException(status_code=404, detail="Position check not found")
-    
+
     return {
         "success": True,
         "data": details
@@ -136,23 +100,10 @@ async def get_check_details(check_id: int):
 
 
 @router.put("/{check_id}/update")
-async def update_check(
-    check_id: int,
-    request: UpdateCheckRequest
-):
+async def update_check(check_id: int, request: UpdateCheckRequest):
     """
     Generic update endpoint for position checks
     Can mark as either found or not-found in one call
-    
-    Example request:
-```json
-    {
-        "found_in_position": true,
-        "checked_by": "Mario",
-        "qty_found": 1,
-        "notes": "Found in UDC"
-    }
-```
     """
     if request.found_in_position:
         result = check_handler.mark_found(
@@ -167,8 +118,9 @@ async def update_check(
             checked_by=request.checked_by,
             notes=request.notes
         )
-    
-    if not result['success']:
-        raise HTTPException(status_code=400, detail=result['message'])
-    
+
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('message', 'Unknown error'))
+
+    # Return the result directly
     return result

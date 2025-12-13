@@ -1,6 +1,12 @@
-"""
-Scheduler for automatic daily imports
-Runs at 3:30 AM daily to import yesterday's data
+﻿"""
+Scheduler for automatic daily imports - IMPROVED VERSION
+Runs at configured time daily to import data
+
+IMPROVEMENTS:
+1. Imports DumpTrack latest file (contains historical data)
+2. Imports Prelievo for a wider date range to catch all picking events
+3. Imports Monitor for yesterday
+4. All importers now handle duplicates, so safe to re-import overlapping data
 """
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
@@ -20,39 +26,124 @@ class ImportScheduler:
         self.dumptrack_importer = DumptrackImporter()
         self.monitor_importer = MonitorImporter()
         self.api_client = PowerStoreAPIClient()
-        
+    
     def daily_import_job(self):
-        """Job that runs daily at 3:30 AM"""
-        logger.info("Starting scheduled daily import job")
+        """
+        Job that runs daily
+        
+        Import order:
+        1. DumpTrack (orders) - latest file, contains ~30 days of data
+        2. Prelievo (picking events) - last 7 days to ensure we catch all picks
+        3. Monitor (UDC positions) - yesterday only (positions are daily snapshots)
+        
+        All importers skip duplicates, so overlapping data is safe!
+        """
+        logger.info("=" * 60)
+        logger.info("STARTING SCHEDULED DAILY IMPORT JOB")
+        logger.info("=" * 60)
+        
+        today = datetime.now().date()
+        yesterday = today - timedelta(days=1)
+        
+        results = {
+            "dumptrack": None,
+            "prelievo": None,
+            "monitor": None,
+            "success": True
+        }
         
         try:
-            # 1. Import latest DumpTrack file
-            logger.info("Step 1: Importing DumpTrack")
+            # ============================================
+            # STEP 1: Import DumpTrack (latest file)
+            # ============================================
+            logger.info("")
+            logger.info("=" * 40)
+            logger.info("STEP 1/3: Importing DumpTrack")
+            logger.info("=" * 40)
+            
             dumptrack_result = self.dumptrack_importer.import_latest()
-            logger.info(f"DumpTrack import result: {dumptrack_result}")
+            results["dumptrack"] = dumptrack_result
             
-            # 2. Import PrelievoPowerSort for yesterday
-            logger.info("Step 2: Importing PrelievoPowerSort")
-            yesterday = (datetime.now() - timedelta(days=1)).date()
+            if dumptrack_result.get('success'):
+                logger.info(f"✓ DumpTrack: {dumptrack_result.get('records_imported', 0)} new records")
+                logger.info(f"  Skipped: {dumptrack_result.get('records_skipped', 0)} duplicates")
+            else:
+                logger.error(f"✗ DumpTrack failed: {dumptrack_result.get('message')}")
+                results["success"] = False
+            
+            # ============================================
+            # STEP 2: Import PrelievoPowerSort
+            # Import last 7 days to ensure all picking events are captured
+            # Duplicates will be skipped automatically
+            # ============================================
+            logger.info("")
+            logger.info("=" * 40)
+            logger.info("STEP 2/3: Importing PrelievoPowerSort (last 7 days)")
+            logger.info("=" * 40)
+            
+            # Import last 7 days of picking data
+            prelievo_start = today - timedelta(days=7)
+            prelievo_end = yesterday
+            
+            logger.info(f"  Date range: {prelievo_start} to {prelievo_end}")
+            
             prelievo_result = self.api_client.call_prelievo_powersort(
-                start_date=yesterday,
-                end_date=yesterday
+                start_date=prelievo_start,
+                end_date=prelievo_end
             )
-            logger.info(f"PrelievoPowerSort import result: {prelievo_result}")
+            results["prelievo"] = prelievo_result
             
-            # 3. Import yesterday's Monitor file
-            logger.info("Step 3: Importing Monitor")
+            if prelievo_result.get('success'):
+                logger.info(f"✓ Prelievo: {prelievo_result.get('records_imported', 0)} new records")
+                logger.info(f"  Skipped: {prelievo_result.get('records_skipped', 0)} duplicates")
+                logger.info(f"  Picking events: {prelievo_result.get('picking_events_created', 0)} new")
+            else:
+                logger.error(f"✗ Prelievo failed: {prelievo_result.get('message')}")
+                results["success"] = False
+            
+            # ============================================
+            # STEP 3: Import Monitor (yesterday)
+            # Monitor files are daily snapshots, so only need yesterday
+            # ============================================
+            logger.info("")
+            logger.info("=" * 40)
+            logger.info("STEP 3/3: Importing Monitor (yesterday)")
+            logger.info("=" * 40)
+            
             monitor_result = self.monitor_importer.import_yesterday()
-            logger.info(f"Monitor import result: {monitor_result}")
+            results["monitor"] = monitor_result
             
-            logger.info("Daily import job completed successfully")
+            if monitor_result.get('success'):
+                logger.info(f"✓ Monitor: {monitor_result.get('records_imported', 0)} new records")
+                logger.info(f"  Skipped: {monitor_result.get('records_skipped', 0)} duplicates")
+                logger.info(f"  Positions: {monitor_result.get('positions_new', 0)} new, {monitor_result.get('positions_updated', 0)} updated")
+            else:
+                logger.warning(f"⚠ Monitor: {monitor_result.get('message')}")
+                # Monitor failure is not critical (might be weekend/holiday)
+            
+            # ============================================
+            # SUMMARY
+            # ============================================
+            logger.info("")
+            logger.info("=" * 60)
+            if results["success"]:
+                logger.info("✓✓✓ DAILY IMPORT JOB COMPLETED SUCCESSFULLY")
+            else:
+                logger.warning("⚠⚠⚠ DAILY IMPORT JOB COMPLETED WITH ERRORS")
+            logger.info("=" * 60)
+            
+            return results
             
         except Exception as e:
-            logger.error(f"Error in daily import job: {e}")
+            logger.error(f"❌ CRITICAL ERROR in daily import job: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            results["success"] = False
+            results["error"] = str(e)
+            return results
     
     def start(self):
         """Start the scheduler"""
-        # Schedule daily import at configured time (default 3:30 AM)
         self.scheduler.add_job(
             self.daily_import_job,
             'cron',
@@ -71,6 +162,38 @@ class ImportScheduler:
         logger.info("Scheduler stopped")
     
     def run_now(self):
-        """Manually trigger the daily import job (for testing)"""
-        logger.info("Manually triggering daily import job")
-        self.daily_import_job()
+        """
+        Manually trigger the daily import job
+        Called via POST /scheduler/trigger endpoint
+        """
+        logger.info("Manually triggering daily import job via API")
+        return self.daily_import_job()
+
+
+# ============================================
+# ALTERNATIVE: For Windows Task Scheduler
+# ============================================
+def run_daily_import():
+    """
+    Standalone function to run daily import
+    Can be called directly from Windows Task Scheduler:
+    
+    python -c "from services.ingestion_service.scheduler import run_daily_import; run_daily_import()"
+    """
+    logger.info("Running daily import via standalone function")
+    
+    scheduler = ImportScheduler()
+    result = scheduler.daily_import_job()
+    
+    if result.get("success"):
+        logger.info("Daily import completed successfully")
+        return 0
+    else:
+        logger.error("Daily import failed")
+        return 1
+
+
+if __name__ == "__main__":
+    # Allow running directly: python scheduler.py
+    import sys
+    sys.exit(run_daily_import())

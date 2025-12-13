@@ -1,6 +1,8 @@
-"""
-Position Generator
+﻿"""
+Position Generator - FIXED VERSION
 Generates optimized checking routes for operators
+
+FIX: Changed 'PENDING' to 'TO_CHECK' to match SQL schema
 """
 from typing import List, Dict, Optional
 from loguru import logger
@@ -25,6 +27,7 @@ class PositionGenerator:
         """
         try:
             with get_db_context() as db:
+                db.expire_all()
                 mission = db.query(Mission).filter(
                     Mission.id == mission_id
                 ).first()
@@ -98,10 +101,10 @@ class PositionGenerator:
         """
         try:
             with get_db_context() as db:
-                # Get next unchecked position in alphabetical order
+                # FIX: Look for both 'TO_CHECK' and 'PENDING' for backwards compatibility
                 check = db.query(PositionCheck).filter(
                     PositionCheck.mission_id == mission_id,
-                    PositionCheck.status == 'PENDING'
+                    PositionCheck.status.in_(['TO_CHECK', 'PENDING'])
                 ).order_by(PositionCheck.position_code).first()
                 
                 if not check:
@@ -160,15 +163,44 @@ class PositionGenerator:
                 total_items = len(items)
                 resolved_items = sum(1 for item in items if item.is_resolved)
                 
-                # Count checks
+                # Count checks by status - FIXED TO COUNT CORRECTLY!
                 checks = db.query(PositionCheck).filter(
                     PositionCheck.mission_id == mission_id
                 ).all()
                 
                 total_checks = len(checks)
-                pending_checks = sum(1 for c in checks if c.status == 'PENDING')
-                found_checks = sum(1 for c in checks if c.status == 'FOUND')
-                not_found_checks = sum(1 for c in checks if c.status == 'NOT_FOUND')
+                
+                # FIX: Count both 'TO_CHECK' and 'PENDING' as pending
+                pending_checks = 0
+                found_checks = 0
+                not_found_checks = 0
+                skipped_checks = 0
+                
+                for check in checks:
+                    if check.status in ['TO_CHECK', 'PENDING']:
+                        pending_checks += 1
+                    elif check.status == 'FOUND':
+                        found_checks += 1
+                    elif check.status == 'NOT_FOUND':
+                        not_found_checks += 1
+                    elif check.status == 'SKIPPED_AUTO':
+                        skipped_checks += 1
+                
+                # Log for debugging
+                logger.info(f"📊 Mission {mission_id} summary:")
+                logger.info(f"  - PENDING/TO_CHECK: {pending_checks}")
+                logger.info(f"  - FOUND: {found_checks}")
+                logger.info(f"  - NOT_FOUND: {not_found_checks}")
+                logger.info(f"  - SKIPPED: {skipped_checks}")
+                
+                # Completed = FOUND + NOT_FOUND + SKIPPED_AUTO
+                completed_checks = found_checks + not_found_checks + skipped_checks
+                
+                # Calculate percentage based on completed checks
+                completion_percentage = round(
+                    (completed_checks / total_checks * 100) if total_checks > 0 else 0, 
+                    2
+                )
                 
                 return {
                     'mission_id': mission.id,
@@ -184,7 +216,8 @@ class PositionGenerator:
                     'positions_pending': pending_checks,
                     'positions_found': found_checks,
                     'positions_not_found': not_found_checks,
-                    'completion_percentage': round((resolved_items / total_items * 100) if total_items > 0 else 0, 2)
+                    'positions_skipped': skipped_checks,
+                    'completion_percentage': completion_percentage
                 }
                 
         except Exception as e:
