@@ -17,20 +17,21 @@ position_generator = PositionGenerator()
 
 
 # Pydantic models for request validation
-class CreateMissionRequest(BaseModel):
-    """Request model for creating a mission from cesta"""
-    cesta: str = Field(..., description="Basket code (cesta)", example="X0005", min_length=1)
-
-
 class UpdateStatusRequest(BaseModel):
     """Request model for updating mission status"""
     new_status: str = Field(..., description="New status (OPEN, IN_PROGRESS, COMPLETED, CANCELLED)", example="IN_PROGRESS")
 
 
 @router.post("/from-cesta")
-async def create_mission_from_cesta(request: CreateMissionRequest):
+async def create_mission_from_cesta(
+    cesta: str = Query(..., description="Scan or type basket code like example: X0005")
+):
     """
     Create a new mission from a basket code (cesta)
+    
+    **How to use:**
+    - **Scan** the barcode directly into the cesta field, OR
+    - **Type** the cesta code manually
     
     Process:
     1. Calls GetSpedito2 API to get what was shipped
@@ -38,15 +39,10 @@ async def create_mission_from_cesta(request: CreateMissionRequest):
     3. Creates mission with missing items
     4. Generates position checks
     
-    Example request:
-```json
-    {
-        "cesta": "X0005"
-    }
-```
+    Example: X0005, X0052, X0103
     """
     result = mission_creator.create_mission_from_cesta(
-        cesta=request.cesta,
+        cesta=cesta.strip().upper(),  # Clean and uppercase
         created_by="System"
     )
     
