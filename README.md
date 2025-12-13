@@ -75,7 +75,7 @@ test_connection()  # Should return True
 
 ## 🔄 Data Flow
 
-### Daily Import (Automatic at 3:30 AM)
+### Daily Import (Automatic at 5:30 AM)
 1. **DumpTrack Import**: Import latest file → Update orders
 2. **Monitor Import**: Import yesterday's file → Update UDC positions
 
