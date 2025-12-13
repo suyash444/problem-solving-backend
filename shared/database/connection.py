@@ -8,7 +8,6 @@ from sqlalchemy.ext.declarative import declarative_base
 from contextlib import contextmanager
 from typing import Generator
 from loguru import logger
-
 from config.settings import settings
 
 # SQLAlchemy Base
@@ -58,11 +57,12 @@ def get_db_context():
     Usage:
         with get_db_context() as db:
             # do something with db
+            db.commit()  # User must commit explicitly
     """
     db = SessionLocal()
     try:
         yield db
-        db.commit()
+        # DON'T auto-commit here - let the caller decide when to commit
     except Exception as e:
         db.rollback()
         logger.error(f"Database error: {e}")

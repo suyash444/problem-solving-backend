@@ -1,6 +1,8 @@
 ﻿"""
-Mission Creator Service
+Mission Creator Service - FIXED VERSION
 Creates missions from basket (cesta) codes by comparing shipped vs ordered items
+
+FIX: Changed status='PENDING' to status='TO_CHECK' to match SQL schema
 """
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -240,13 +242,14 @@ class MissionCreator:
                 
                 position_code = location.position_code if location else 'UNKNOWN'
                 
+                # FIX: Use 'TO_CHECK' instead of 'PENDING' to match SQL schema
                 position_check = PositionCheck(
                     mission_id=mission.id,
                     mission_item_id=mission_item_id,
                     udc=udc_inv.udc,
                     listone=item['listone'],
                     position_code=position_code,
-                    status='PENDING',
+                    status='TO_CHECK',  # ← FIXED: Changed from 'PENDING' to 'TO_CHECK'
                     found_in_position=None,
                     qty_found=None
                 )

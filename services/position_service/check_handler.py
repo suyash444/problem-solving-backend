@@ -1,6 +1,10 @@
 ﻿"""
-Check Handler
+Check Handler - FIXED VERSION 2
 Handles position check updates and auto-resolution logic
+
+BUG FIX: The _auto_skip_remaining_positions was including the CURRENT check
+         because at the time of query, the check hadn't been flushed yet.
+         Solution: Exclude the current check_id from the auto-skip query.
 """
 from datetime import datetime
 from typing import Dict, Optional
@@ -9,6 +13,7 @@ from loguru import logger
 
 from shared.database import get_db_context
 from shared.database.models import PositionCheck, MissionItem, Mission
+from sqlalchemy.orm import Session
 
 
 class CheckHandler:
@@ -28,17 +33,8 @@ class CheckHandler:
         1. Mark this check as FOUND
         2. Update mission item qty_found
         3. If all missing qty found, mark item as resolved
-        4. Auto-skip remaining positions for this item if resolved
+        4. Auto-skip remaining positions for this item if resolved (EXCLUDING current check!)
         5. Check if entire mission is complete
-        
-        Args:
-            check_id: Position check ID
-            checked_by: Operator who checked
-            qty_found: Quantity found (optional, defaults to 1)
-            notes: Additional notes
-            
-        Returns:
-            Dict with result and updated statistics
         """
         try:
             with get_db_context() as db:
@@ -53,7 +49,8 @@ class CheckHandler:
                         "message": "Position check not found"
                     }
                 
-                if check.status != 'PENDING':  # ← CHANGED FROM TO_CHECK
+                # Accept both 'TO_CHECK' and 'PENDING' for backwards compatibility
+                if check.status not in ['TO_CHECK', 'PENDING']:
                     return {
                         "success": False,
                         "message": f"Position already checked (status: {check.status})"
@@ -74,7 +71,11 @@ class CheckHandler:
                 if qty_found is None:
                     qty_found = 1.0
                 
-                # Update check
+                logger.info(f"🔍 Marking check {check_id} as FOUND with qty {qty_found}")
+                
+                # ==========================================
+                # STEP 1: Update the check to FOUND
+                # ==========================================
                 check.status = 'FOUND'
                 check.found_in_position = True
                 check.qty_found = Decimal(str(qty_found))
@@ -82,41 +83,68 @@ class CheckHandler:
                 check.checked_by = checked_by
                 check.notes = notes
                 
-                # Update mission item
+                # IMPORTANT: Flush to save the FOUND status before auto-skip logic
+                db.flush()
+                
+                logger.info(f"✅ Check {check_id} updated: status=FOUND (flushed to DB)")
+                
+                # ==========================================
+                # STEP 2: Update mission item qty_found
+                # ==========================================
                 mission_item.qty_found = (mission_item.qty_found or Decimal('0')) + Decimal(str(qty_found))
                 
-                # Check if item is now resolved
+                # ==========================================
+                # STEP 3: Check if item is now resolved
+                # ==========================================
                 item_resolved = False
+                skipped_count = 0
+                
                 if mission_item.qty_found >= mission_item.qty_missing:
                     mission_item.is_resolved = True
                     mission_item.resolved_at = datetime.utcnow()
                     item_resolved = True
                     
-                    # Auto-skip all other PENDING positions for this item
-                    skipped = self._auto_skip_remaining_positions(
+                    # ==========================================
+                    # STEP 4: Auto-skip OTHER positions (NOT this one!)
+                    # ==========================================
+                    skipped_count = self._auto_skip_remaining_positions(
                         db, 
                         check.mission_id,
-                        check.mission_item_id
+                        check.mission_item_id,
+                        exclude_check_id=check_id  # ← KEY FIX: Exclude current check!
                     )
-                    logger.info(f"✓ Item fully found! Auto-skipped {skipped} remaining positions")
+                    logger.info(f"✓ Item fully found! Auto-skipped {skipped_count} OTHER positions")
                 
+                # ==========================================
+                # STEP 5: Check if entire mission is complete
+                # ==========================================
+                mission_status = self._check_mission_completion(db, check.mission_id)
+                mission_complete = (mission_status == 'COMPLETED')
+                
+                # ==========================================
+                # STEP 6: Commit everything
+                # ==========================================
                 db.commit()
+                logger.info(f"💾 Database committed successfully")
                 
-                # Check if entire mission is complete
-                mission_complete = self._check_mission_completion(db, check.mission_id)
+                # Verify the status after commit (for debugging)
+                logger.info(f"🔍 Final check status: {check.status}")
                 
                 return {
                     "success": True,
                     "message": "Position marked as FOUND",
-                    "item_resolved": item_resolved,
-                    "mission_complete": mission_complete,
-                    "qty_found": float(qty_found),
-                    "total_found_for_item": float(mission_item.qty_found),
-                    "qty_still_missing": float(max(mission_item.qty_missing - mission_item.qty_found, 0))
+                    "data": {
+                        "item_resolved": item_resolved,
+                        "mission_complete": mission_complete,
+                        "qty_found": float(qty_found),
+                        "total_found_for_item": float(mission_item.qty_found),
+                        "qty_still_missing": float(max(mission_item.qty_missing - mission_item.qty_found, 0)),
+                        "positions_auto_skipped": skipped_count
+                    }
                 }
                 
         except Exception as e:
-            logger.error(f"Error marking position as found: {e}")
+            logger.error(f"❌ Error marking position as found: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return {
@@ -132,14 +160,6 @@ class CheckHandler:
     ) -> Dict:
         """
         Mark a position check as NOT_FOUND
-        
-        Args:
-            check_id: Position check ID
-            checked_by: Operator who checked
-            notes: Additional notes
-            
-        Returns:
-            Dict with result
         """
         try:
             with get_db_context() as db:
@@ -154,11 +174,14 @@ class CheckHandler:
                         "message": "Position check not found"
                     }
                 
-                if check.status != 'PENDING':  # ← CHANGED FROM TO_CHECK
+                # Accept both 'TO_CHECK' and 'PENDING' for backwards compatibility
+                if check.status not in ['TO_CHECK', 'PENDING']:
                     return {
                         "success": False,
                         "message": f"Position already checked (status: {check.status})"
                     }
+                
+                logger.info(f"🔍 Marking check {check_id} as NOT_FOUND")
                 
                 # Update check
                 check.status = 'NOT_FOUND'
@@ -167,7 +190,12 @@ class CheckHandler:
                 check.checked_by = checked_by
                 check.notes = notes
                 
+                # Check mission status BEFORE committing
+                self._check_mission_completion(db, check.mission_id)
+                
+                # Commit all changes
                 db.commit()
+                logger.info(f"💾 Database committed successfully")
                 
                 return {
                     "success": True,
@@ -175,7 +203,7 @@ class CheckHandler:
                 }
                 
         except Exception as e:
-            logger.error(f"Error marking position as not found: {e}")
+            logger.error(f"❌ Error marking position as not found: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return {
@@ -185,64 +213,92 @@ class CheckHandler:
     
     def _auto_skip_remaining_positions(
         self, 
-        db, 
+        db: Session, 
         mission_id: int,
-        mission_item_id: int
+        mission_item_id: int,
+        exclude_check_id: int = None  # ← NEW PARAMETER!
     ) -> int:
         """
-        Auto-skip all remaining PENDING positions for a resolved item
+        Auto-skip all remaining TO_CHECK/PENDING positions for a resolved item
+        EXCLUDING the current check that was just marked as FOUND!
+        
+        Args:
+            db: Database session
+            mission_id: Mission ID
+            mission_item_id: Mission item ID
+            exclude_check_id: Check ID to EXCLUDE from auto-skip (the one just marked FOUND)
         
         Returns:
             Number of positions skipped
         """
-        remaining_checks = db.query(PositionCheck).filter(
+        # Build query for remaining checks
+        query = db.query(PositionCheck).filter(
             PositionCheck.mission_id == mission_id,
             PositionCheck.mission_item_id == mission_item_id,
-            PositionCheck.status == 'PENDING'  # ← CHANGED FROM TO_CHECK
-        ).all()
+            PositionCheck.status.in_(['TO_CHECK', 'PENDING'])
+        )
+        
+        # KEY FIX: Exclude the current check that was just marked FOUND!
+        if exclude_check_id:
+            query = query.filter(PositionCheck.id != exclude_check_id)
+        
+        remaining_checks = query.all()
+        
+        logger.info(f"🔄 Auto-skipping {len(remaining_checks)} remaining positions for mission_item {mission_item_id}")
         
         for check in remaining_checks:
             check.status = 'SKIPPED_AUTO'
             check.notes = 'Auto-skipped: All missing items found'
             check.checked_at = datetime.utcnow()
+            logger.debug(f"   → Skipped check {check.id}")
         
         return len(remaining_checks)
     
-    def _check_mission_completion(self, db, mission_id: int) -> bool:
+    def _check_mission_completion(self, db: Session, mission_id: int) -> str:
         """
-        Check if all items in a mission are resolved
-        If yes, mark mission as COMPLETED
-        
-        Returns:
-            True if mission is now complete
+        Check if mission is complete and update status
         """
-        mission = db.query(Mission).filter(
-            Mission.id == mission_id
-        ).first()
+        mission = db.query(Mission).filter(Mission.id == mission_id).first()
         
         if not mission:
-            return False
+            return "UNKNOWN"
         
-        # Get all mission items and check if all resolved
-        all_items = db.query(MissionItem).filter(
+        # Count items
+        total_items = db.query(MissionItem).filter(
             MissionItem.mission_id == mission_id
+        ).count()
+        
+        resolved_items = db.query(MissionItem).filter(
+            MissionItem.mission_id == mission_id,
+            MissionItem.is_resolved == True
+        ).count()
+        
+        # Count ALL checks
+        all_checks = db.query(PositionCheck).filter(
+            PositionCheck.mission_id == mission_id
         ).all()
         
-        if not all_items:
-            return False
+        # Count both 'TO_CHECK' and 'PENDING' as pending
+        pending_checks = sum(1 for c in all_checks if c.status in ['TO_CHECK', 'PENDING'])
+        completed_checks = sum(1 for c in all_checks if c.status in ['FOUND', 'NOT_FOUND', 'SKIPPED_AUTO'])
         
-        all_resolved = all(item.is_resolved for item in all_items)
+        logger.info(f"Mission {mission_id}: {completed_checks} completed checks, {pending_checks} pending")
         
-        if all_resolved and mission.status != 'COMPLETED':
+        # Update mission status
+        if resolved_items == total_items:
             mission.status = 'COMPLETED'
             mission.completed_at = datetime.utcnow()
-            logger.info(f"✓✓✓ Mission {mission.mission_code} marked as COMPLETED!")
-            return True
-        elif mission.status == 'OPEN':
+            logger.info(f"✓✓✓ Mission {mission.mission_code} COMPLETED!")
+        elif pending_checks == 0 and resolved_items < total_items:
+            mission.status = 'COMPLETED'
+            mission.completed_at = datetime.utcnow()
+            logger.info(f"Mission {mission.mission_code} completed (all checks done, {total_items - resolved_items} items still missing)")
+        elif completed_checks > 0 and mission.status == 'OPEN':
             mission.status = 'IN_PROGRESS'
             mission.started_at = datetime.utcnow()
+            logger.info(f"Mission {mission.mission_code} status: OPEN → IN_PROGRESS")
         
-        return mission.status == 'COMPLETED'
+        return mission.status
     
     def update_mission_status(
         self,
@@ -251,13 +307,6 @@ class CheckHandler:
     ) -> Dict:
         """
         Update mission status manually
-        
-        Args:
-            mission_id: Mission ID
-            new_status: New status (OPEN, IN_PROGRESS, COMPLETED, CANCELLED)
-            
-        Returns:
-            Dict with result
         """
         try:
             valid_statuses = ['OPEN', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']
