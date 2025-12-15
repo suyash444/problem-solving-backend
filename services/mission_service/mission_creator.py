@@ -3,7 +3,7 @@ Mission Creator Service - FIXED VERSION v4
 Creates missions from basket (cesta) codes by comparing shipped vs ordered items
 
 FIXES:
-1. Filter order_items by n_lista ONLY (not cesta!) - because some items have NULL cesta
+1. Filter order_items by n_lista ONLY (not cesta!) 
 2. Compare only items from the SAME n_lista (last order of the box)
 3. Convert position codes to ASCII format (86265 → V2A)
 """
@@ -61,6 +61,22 @@ class MissionCreator:
                 }
             
             with get_db_context() as db:
+                #  prevent duplicate missions for same cesta
+                existing_mission = db.query(Mission).filter(
+                    Mission.cesta == cesta,
+                    Mission.status.in_(['OPEN', 'IN_PROGRESS'])
+                ).order_by(Mission.created_at.desc()).first()
+
+                if existing_mission:
+                    return {
+                     "success": True,
+                     "message": f"Mission already exists for cesta {cesta}",
+                     "mission_id": existing_mission.id,
+                     "mission_code": existing_mission.mission_code,
+                     "cesta": existing_mission.cesta,
+                     "status": existing_mission.status,
+                     "already_exists": True
+                    }
                 # Step 2: Find missing items (FIXED v4 - filter by n_lista ONLY!)
                 missing_items = self._find_missing_items_fixed(db, cesta, shipped_items)
                 
