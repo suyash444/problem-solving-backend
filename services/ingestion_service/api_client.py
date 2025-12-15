@@ -3,6 +3,7 @@ API Client for external PowerStore APIs - FIXED VERSION WITH DUPLICATE HANDLING
 Handles PrelievoPowerSort and GetSpedito2 API calls
 
 FIX: Skips duplicate records when importing overlapping date ranges
+FIX2: GetSpedito2 now also skips duplicates in shipped_items table
 """
 import requests
 from datetime import date, datetime
@@ -336,8 +337,9 @@ class PowerStoreAPIClient:
     def call_get_spedito2(self, cesta: str) -> Dict:
         """
         Call GetSpedito2 API to get shipped items for a basket
-        This is called on-demand when creating a mission, so duplicates are OK
-        (we always want fresh data for the cesta)
+        
+        FIXED: Now skips duplicate records in shipped_items and import_spedito tables
+        Unique key: cesta + n_ordine + n_lista + sku
         """
         try:
             endpoint = f"{self.base_url}/Orders/GetSpedito2"
@@ -375,48 +377,118 @@ class PowerStoreAPIClient:
                 except:
                     return None
             
-            # Import into database (shipped_items can have duplicates - it's OK for historical tracking)
+            # Import into database with DUPLICATE CHECK
             with get_db_context() as db:
-                for item in spedito_items:
-                    # Import to shipped_items table
-                    shipped_item = ShippedItem(
-                        cesta=cesta,
-                        n_ordine=item.get('nOrdine'),
-                        n_lista=item.get('nLista'),
-                        sku=item.get('CodiceArticolo'),
-                        qty_shipped=Decimal(str(item.get('Quantita', 0))) if item.get('Quantita') else Decimal('0'),
-                        descrizione=item.get('Descrizione'),
-                        sovracollo=item.get('Sovracollo'),
-                        vettore=item.get('Vettore'),
-                        shipped_at=safe_datetime(item.get('DataOra'))
-                    )
-                    db.add(shipped_item)
+                # Load existing shipped items for this cesta
+                logger.info(f"  Loading existing shipped items for cesta {cesta}...")
+                existing_shipped: Set[tuple] = set()
+                
+                try:
+                    existing_records = db.execute(text("""
+                        SELECT DISTINCT cesta, n_ordine, n_lista, sku
+                        FROM shipped_items
+                        WHERE cesta = :cesta
+                    """), {"cesta": cesta}).fetchall()
                     
-                    # Also import to raw table
-                    raw_record = ImportSpedito(
-                        CodiceProprieta=item.get('CodiceProprieta'),
-                        Azienda=item.get('Azienda'),
-                        Vettore=item.get('Vettore'),
-                        Sovracollo=item.get('Sovracollo'),
-                        nOrdine=item.get('nOrdine'),
-                        nLista=item.get('nLista'),
-                        CodiceArticolo=item.get('CodiceArticolo'),
-                        Descrizione=item.get('Descrizione'),
-                        Quantita=item.get('Quantita'),
-                        Cesta=cesta,
-                        CodiceLetto=item.get('CodiceLetto'),
-                        DataOra=safe_datetime(item.get('DataOra'))
-                    )
-                    db.add(raw_record)
+                    for row in existing_records:
+                        key = (
+                            str(row[0]) if row[0] else '',
+                            str(row[1]) if row[1] else '',
+                            str(row[2]) if row[2] else '',
+                            str(row[3]) if row[3] else ''
+                        )
+                        existing_shipped.add(key)
+                except Exception as e:
+                    logger.warning(f"  Could not load existing shipped items: {e}")
+                
+                logger.info(f"  Found {len(existing_shipped)} existing shipped items")
+                
+                # Load existing import_spedito records
+                existing_raw: Set[tuple] = set()
+                
+                try:
+                    existing_raw_records = db.execute(text("""
+                        SELECT DISTINCT Cesta, nOrdine, nLista, CodiceArticolo
+                        FROM import_spedito
+                        WHERE Cesta = :cesta
+                    """), {"cesta": cesta}).fetchall()
+                    
+                    for row in existing_raw_records:
+                        key = (
+                            str(row[0]) if row[0] else '',
+                            str(row[1]) if row[1] else '',
+                            str(row[2]) if row[2] else '',
+                            str(row[3]) if row[3] else ''
+                        )
+                        existing_raw.add(key)
+                except Exception as e:
+                    logger.warning(f"  Could not load existing raw spedito: {e}")
+                
+                inserted_shipped = 0
+                skipped_shipped = 0
+                inserted_raw = 0
+                skipped_raw = 0
+                
+                for item in spedito_items:
+                    n_ordine = str(item.get('nOrdine', '')) if item.get('nOrdine') else ''
+                    n_lista = str(item.get('nLista', '')) if item.get('nLista') else ''
+                    sku = str(item.get('CodiceArticolo', '')) if item.get('CodiceArticolo') else ''
+                    
+                    shipped_key = (cesta, n_ordine, n_lista, sku)
+                    
+                    # Insert shipped_item only if not exists
+                    if shipped_key not in existing_shipped:
+                        shipped_item = ShippedItem(
+                            cesta=cesta,
+                            n_ordine=item.get('nOrdine'),
+                            n_lista=item.get('nLista'),
+                            sku=item.get('CodiceArticolo'),
+                            qty_shipped=Decimal(str(item.get('Quantita', 0))) if item.get('Quantita') else Decimal('0'),
+                            descrizione=item.get('Descrizione'),
+                            sovracollo=item.get('Sovracollo'),
+                            vettore=item.get('Vettore'),
+                            shipped_at=safe_datetime(item.get('DataOra'))
+                        )
+                        db.add(shipped_item)
+                        existing_shipped.add(shipped_key)
+                        inserted_shipped += 1
+                    else:
+                        skipped_shipped += 1
+                    
+                    # Insert import_spedito only if not exists
+                    if shipped_key not in existing_raw:
+                        raw_record = ImportSpedito(
+                            CodiceProprieta=item.get('CodiceProprieta'),
+                            Azienda=item.get('Azienda'),
+                            Vettore=item.get('Vettore'),
+                            Sovracollo=item.get('Sovracollo'),
+                            nOrdine=item.get('nOrdine'),
+                            nLista=item.get('nLista'),
+                            CodiceArticolo=item.get('CodiceArticolo'),
+                            Descrizione=item.get('Descrizione'),
+                            Quantita=item.get('Quantita'),
+                            Cesta=cesta,
+                            CodiceLetto=item.get('CodiceLetto'),
+                            DataOra=safe_datetime(item.get('DataOra'))
+                        )
+                        db.add(raw_record)
+                        existing_raw.add(shipped_key)
+                        inserted_raw += 1
+                    else:
+                        skipped_raw += 1
                 
                 db.commit()
             
-            logger.info(f"Successfully imported {len(spedito_items)} shipped items for cesta {cesta}")
+            logger.info(f"✓ GetSpedito2 for cesta {cesta}:")
+            logger.info(f"  shipped_items: {inserted_shipped} new, {skipped_shipped} skipped")
+            logger.info(f"  import_spedito: {inserted_raw} new, {skipped_raw} skipped")
             
             return {
                 "success": True,
-                "message": f"Found {len(spedito_items)} shipped items",
-                "data": spedito_items
+                "message": f"Found {len(spedito_items)} shipped items ({inserted_shipped} new, {skipped_shipped} duplicates)",
+                "data": spedito_items,
+                "inserted": inserted_shipped,
+                "skipped": skipped_shipped
             }
             
         except requests.exceptions.RequestException as e:
@@ -428,6 +500,8 @@ class PowerStoreAPIClient:
             }
         except Exception as e:
             logger.error(f"Error calling GetSpedito2: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 "success": False,
                 "message": f"Error: {str(e)}",
