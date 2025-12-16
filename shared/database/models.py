@@ -203,7 +203,7 @@ class ShippedItem(Base):
     __tablename__ = 'shipped_items'
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    cesta = Column(String(50), nullable=False)
+    cesta = Column(String(500), nullable=False)
     n_ordine = Column(String(50), nullable=False)
     n_lista = Column(BigInteger, nullable=False)
     sku = Column(String(80), nullable=False)
@@ -225,6 +225,7 @@ class Mission(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     mission_code = Column(String(50), unique=True, nullable=False)
     cesta = Column(String(50), nullable=False)
+    reference_n_lista = Column(BigInteger, nullable=True)
     status = Column(String(20), default='OPEN', nullable=False)
     created_by = Column(String(50))
     created_at = Column(DateTime, default=datetime.utcnow)
