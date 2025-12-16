@@ -125,6 +125,7 @@ class MissionCreator:
                 for item_data in missing_items:
                     mission_item = MissionItem(
                         mission_id=mission.id,
+                        cesta=cesta,
                         n_ordine=item_data['n_ordine'],
                         n_lista=item_data['n_lista'],
                         sku=item_data['sku'],
@@ -333,10 +334,30 @@ class MissionCreator:
             reference_n_lista = min(all_shipped_n_listas) if all_shipped_n_listas else None
 
             with get_db_context() as db:
-                mission_code = self._generate_mission_code(db)
+                
 
                 # Only cestas that actually have missing items
-                cestas_str = ",".join([c['cesta'] for c in cestas_with_missing])
+                cestas_list = [c['cesta'] for c in cestas_with_missing]
+                cestas_str = self._normalize_cestas_str(cestas_list)
+                existing_mission = db.query(Mission).filter(
+                    Mission.cesta == cestas_str,
+                    Mission.reference_n_lista == reference_n_lista,
+                    Mission.status.in_(['OPEN', 'IN_PROGRESS'])
+                ).order_by(Mission.created_at.desc()).first()
+
+                if existing_mission:
+                    return {
+                        "success": True,
+                        "message": "Batch mission already exists",
+                        "mission_id": existing_mission.id,
+                        "mission_code": existing_mission.mission_code,
+                        "cestas": existing_mission.cesta,
+                        "status": existing_mission.status,
+                        "already_exists": True
+                    }
+
+
+                mission_code = self._generate_mission_code(db)
 
                 mission = Mission(
                     mission_code=mission_code,
@@ -351,8 +372,14 @@ class MissionCreator:
 
                 # STEP 4: Add mission items (grouped)
                 for item_data in grouped_items:
+                    # item_data['cestas'] is a list of cestas that contributed to this item
+                    item_cesta = None
+                    if item_data.get("cestas"):
+                        item_cesta = ",".join(item_data["cestas"])
+
                     mission_item = MissionItem(
                         mission_id=mission.id,
+                        cesta=item_cesta,  
                         n_ordine=item_data['n_ordine'],
                         n_lista=item_data['n_lista'],
                         sku=item_data['sku'],
@@ -399,6 +426,9 @@ class MissionCreator:
                 "success": False,
                 "message": f"Error creating batch mission: {str(e)}"
             }
+    
+    def _normalize_cestas_str(self, cestas_list: List[str]) -> str:
+        return ",".join(sorted([c.strip().upper() for c in cestas_list if c and c.strip()]))
 
     def _group_items_by_sku_listone(self, items: List[Dict]) -> List[Dict]:
         """
@@ -438,6 +468,8 @@ class MissionCreator:
         Positions are sorted alphabetically for optimal route.
         """
         checks_to_create = []
+        seen_checks = set()  # (mission_id, mission_item_id, udc, position_code)
+
 
         # Build map keyed EXACTLY like grouping: (sku, listone, n_ordine, n_lista) -> mission_item_id
         mission_items = db.query(MissionItem).filter(
@@ -484,6 +516,11 @@ class MissionCreator:
 
                 position_code_raw = location.position_code if location else 'UNKNOWN'
                 position_code_ascii = self._convert_position_to_ascii(position_code_raw)
+                key_dup = (mission.id, mission_item_id, udc_inv.udc, position_code_ascii)
+                if key_dup in seen_checks:
+                    continue
+                seen_checks.add(key_dup)
+
 
                 checks_to_create.append({
                     'mission_id': mission.id,
@@ -578,36 +615,47 @@ class MissionCreator:
         return missing
 
     def _generate_position_checks(self, db: Session, mission: Mission, missing_items: List[Dict]) -> int:
-        """Generate position checks for single cesta mission"""
+        """Generate position checks for single cesta mission (SAFE: no mixing)"""
         checks_created = 0
+        seen_checks = set()  # (mission_id, mission_item_id, udc, position_code)
 
+
+        # Load mission items
         mission_items = db.query(MissionItem).filter(
-            MissionItem.mission_id == mission.id
+        MissionItem.mission_id == mission.id
         ).all()
 
+        # SAFE map: (sku, listone, n_ordine, n_lista) -> mission_item_id
         mission_items_map = {}
         for mi in mission_items:
             if mi.listone:
-                key = (mi.sku, mi.listone)
+                key = (mi.sku, mi.listone, mi.n_ordine, mi.n_lista)
                 mission_items_map[key] = mi.id
 
         for item in missing_items:
             if not item.get('listone'):
                 continue
 
-            udcs = db.query(UDCInventory).filter(
-                UDCInventory.listone == item['listone'],
-                UDCInventory.sku == item['sku'],
-                UDCInventory.qty > 0
-            ).all()
-
-            if not udcs:
-                continue
-
-            key = (item['sku'], item['listone'])
+            # Find correct mission_item_id using FULL key
+            key = (item['sku'], item['listone'], item['n_ordine'], item['n_lista'])
             mission_item_id = mission_items_map.get(key)
 
             if not mission_item_id:
+                logger.warning(
+                f"[SINGLE] Could not find mission_item_id for "
+                f"SKU={item['sku']} listone={item['listone']} "
+                f"n_ordine={item['n_ordine']} n_lista={item['n_lista']}"
+                )
+                continue
+
+            # Find UDCs that have this SKU for this listone
+            udcs = db.query(UDCInventory).filter(
+            UDCInventory.listone == item['listone'],
+            UDCInventory.sku == item['sku'],
+            UDCInventory.qty > 0
+            ).all()
+
+            if not udcs:
                 continue
 
             for udc_inv in udcs:
@@ -617,6 +665,10 @@ class MissionCreator:
 
                 position_code_raw = location.position_code if location else 'UNKNOWN'
                 position_code_ascii = self._convert_position_to_ascii(position_code_raw)
+                key_dup = (mission.id, mission_item_id, udc_inv.udc, position_code_ascii)
+                if key_dup in seen_checks:
+                    continue
+                seen_checks.add(key_dup)
 
                 position_check = PositionCheck(
                     mission_id=mission.id,
@@ -634,6 +686,7 @@ class MissionCreator:
 
         db.flush()
         return checks_created
+
 
     def _convert_position_to_ascii(self, position_code: str) -> str:
         """Convert position code to ASCII format: 86265 → V2A"""

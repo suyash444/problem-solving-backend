@@ -242,6 +242,7 @@ class MissionItem(Base):
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     mission_id = Column(BigInteger, ForeignKey('missions.id'), nullable=False)
+    cesta = Column(String(50), nullable=True)
     n_ordine = Column(String(50), nullable=False)
     n_lista = Column(BigInteger, nullable=False)
     sku = Column(String(80), nullable=False)
@@ -256,14 +257,14 @@ class MissionItem(Base):
     
     # Relationships
     mission = relationship("Mission", back_populates="items")
-
+    checks = relationship("PositionCheck", back_populates="mission_item")
 
 class PositionCheck(Base):
     __tablename__ = 'position_checks'
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     mission_id = Column(BigInteger, ForeignKey('missions.id'), nullable=False)
-    mission_item_id = Column(BigInteger, nullable=False)
+    mission_item_id = Column(BigInteger, ForeignKey('mission_items.id'), nullable=False)
     position_code = Column(String(120), nullable=False)
     udc = Column(String(50))
     listone = Column(BigInteger)
@@ -276,6 +277,7 @@ class PositionCheck(Base):
     
     # Relationships
     mission = relationship("Mission", back_populates="checks")
+    mission_item = relationship("MissionItem", back_populates="checks")
 
 
 # ============================================================================

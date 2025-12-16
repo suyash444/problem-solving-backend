@@ -114,6 +114,7 @@ class PositionCheckDetail(BaseModel):
     found_in_position: Optional[bool]
     checked_at: Optional[datetime]
     checked_by: Optional[str]
+    cesta: Optional[str] = None
     
     class Config:
         from_attributes = True
