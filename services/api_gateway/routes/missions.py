@@ -113,11 +113,7 @@ async def create_batch_mission(request: BatchMissionRequest):
     3. Send all cestas to this endpoint
     4. Get ONE mission with all items combined!
     
-    **Features:**
-    - Combines items with same SKU + Listone
-    - Sorts positions alphabetically for optimal walking route
-    - Tracks which cesta each item came from
-    - Skips cestas with no missing items
+   
     
     **Request body:**
     ```json
