@@ -1,10 +1,14 @@
 """
-Mission API Routes
+Mission API Routes - VERSION v2 with BATCH SUPPORT
 Endpoints for creating and managing missions
+
+NEW ENDPOINTS:
+- POST /missions/check-cesta - Check single cesta for missing items (preview)
+- POST /missions/create-batch - Create ONE mission from MULTIPLE cestas
 """
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 
 from services.mission_service.mission_creator import MissionCreator
 from services.mission_service.position_generator import PositionGenerator
@@ -16,18 +20,33 @@ mission_creator = MissionCreator()
 position_generator = PositionGenerator()
 
 
+# ============================================
 # Pydantic models for request validation
+# ============================================
 class UpdateStatusRequest(BaseModel):
     """Request model for updating mission status"""
     new_status: str = Field(..., description="New status (OPEN, IN_PROGRESS, COMPLETED, CANCELLED)", example="IN_PROGRESS")
 
 
+class BatchMissionRequest(BaseModel):
+    """Request model for creating batch mission from multiple cestas"""
+    cestas: List[str] = Field(
+        ..., 
+        description="List of cesta codes to include in mission",
+        example=["X0399", "X0239", "X0108"],
+        min_items=1
+    )
+
+
+# ============================================
+# SINGLE CESTA ENDPOINTS (Existing)
+# ============================================
 @router.post("/from-cesta")
 async def create_mission_from_cesta(
     cesta: str = Query(..., description="Scan or type basket code like example: X0005")
 ):
     """
-    Create a new mission from a basket code (cesta)
+    Create a new mission from a SINGLE basket code (cesta)
     
     **How to use:**
     - **Scan** the barcode directly into the cesta field, OR
@@ -42,7 +61,7 @@ async def create_mission_from_cesta(
     Example: X0005, X0052, X0103
     """
     result = mission_creator.create_mission_from_cesta(
-        cesta=cesta.strip().upper(),  # Clean and uppercase
+        cesta=cesta.strip().upper(),
         created_by="System"
     )
     
@@ -52,18 +71,96 @@ async def create_mission_from_cesta(
     return result
 
 
-# MOVE /list BEFORE /{mission_id} routes!
+# ============================================
+# BATCH MISSION ENDPOINTS (NEW!)
+# ============================================
+@router.post("/check-cesta")
+async def check_cesta_for_missing(
+    cesta: str = Query(..., description="Cesta code to check for missing items")
+):
+    """
+    Check a cesta for missing items WITHOUT creating a mission.
+    
+    **Use for batch mode:**
+    1. Scan cestas one by one using this endpoint
+    2. See how many items are missing in each
+    3. Build a list of cestas to include
+    4. Call /create-batch to create ONE mission with all cestas
+    
+    Returns:
+    - success: bool
+    - cesta: str
+    - missing_count: int
+    - missing_items: list with details
+    
+    Example: X0399
+    """
+    result = mission_creator.check_cesta_missing_items(
+        cesta=cesta.strip().upper()
+    )
+    
+    return result
+
+
+@router.post("/create-batch")
+async def create_batch_mission(request: BatchMissionRequest):
+    """
+    Create ONE mission from MULTIPLE cestas.
+    
+    **How to use:**
+    1. First, check each cesta using POST /check-cesta
+    2. Build a list of cestas that have missing items
+    3. Send all cestas to this endpoint
+    4. Get ONE mission with all items combined!
+    
+   
+    
+    **Request body:**
+    ```json
+    {
+        "cestas": ["X0399", "X0239", "X0108", "X0146"]
+    }
+    ```
+    
+    **Response includes:**
+    - mission_id, mission_code
+    - cestas_processed: total cestas checked
+    - cestas_with_missing: cestas that had missing items
+    - cestas_skipped: cestas with no missing items
+    - cestas_errors: cestas that had errors
+    - total_missing_items: combined count
+    - position_checks_created: number of positions to check
+    """
+    if not request.cestas or len(request.cestas) == 0:
+        raise HTTPException(status_code=400, detail="No cestas provided")
+    
+    result = mission_creator.create_batch_mission(
+        cestas=request.cestas,
+        created_by="System"
+    )
+    
+    if not result.get('success', False):
+        raise HTTPException(status_code=400, detail=result.get('message', 'Unknown error'))
+    
+    return result
+
+
+# ============================================
+# LIST MISSIONS (Must be before /{mission_id})
+# ============================================
 @router.get("/list")
 async def list_missions(
-    status: Optional[str] = Query(None, description="Filter by status (OPEN, IN_PROGRESS, COMPLETED, CANCELLED)"),
+    status: Optional[str] = Query(None, description="Filter by status (OPEN, IN_PROGRESS, COMPLETED, CANCELLED, HAS_NOT_FOUND)"),
     limit: int = Query(50, description="Maximum number of results", ge=1, le=500)
 ):
     """
     List all missions with optional status filter
     
     Query parameters:
-    - status: Filter by status (OPEN, IN_PROGRESS, COMPLETED, CANCELLED)
+    - status: Filter by status (OPEN, IN_PROGRESS, COMPLETED, CANCELLED, HAS_NOT_FOUND)
     - limit: Maximum number of results (default 50, max 500)
+    
+    HAS_NOT_FOUND: Shows missions that have items marked as NOT_FOUND
     """
     try:
         missions = position_generator.list_all_missions(status=status, limit=limit)
@@ -77,6 +174,9 @@ async def list_missions(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================
+# MISSION DETAILS ENDPOINTS
+# ============================================
 @router.get("/{mission_id}")
 async def get_mission_details(mission_id: int):
     """
@@ -173,11 +273,11 @@ async def update_mission_status(
     Valid statuses: OPEN, IN_PROGRESS, COMPLETED, CANCELLED
     
     Example request:
-```json
+    ```json
     {
         "new_status": "IN_PROGRESS"
     }
-```
+    ```
     """
     try:
         from services.position_service.check_handler import CheckHandler

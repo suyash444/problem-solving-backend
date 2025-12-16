@@ -9,6 +9,7 @@ from loguru import logger
 
 from shared.database import get_db_context
 from shared.database.models import Mission, MissionItem, PositionCheck
+from shared.schemas import mission
 
 
 class PositionGenerator:
@@ -72,7 +73,8 @@ class PositionGenerator:
                             'sku': mission_item.sku,
                             'qty_missing': float(mission_item.qty_missing) if mission_item.qty_missing else 0,
                             'n_ordine': mission_item.n_ordine,
-                            'n_lista': mission_item.n_lista
+                            'n_lista': mission_item.n_lista,
+                            "cesta": mission_item.cesta or mission.cesta,
                         })
                 
                 return {
@@ -102,6 +104,8 @@ class PositionGenerator:
         try:
             with get_db_context() as db:
                 # FIX: Look for both 'TO_CHECK' and 'PENDING' for backwards compatibility
+                mission_obj = db.query(Mission).filter(Mission.id == mission_id).first()
+
                 check = db.query(PositionCheck).filter(
                     PositionCheck.mission_id == mission_id,
                     PositionCheck.status.in_(['TO_CHECK', 'PENDING'])
@@ -127,7 +131,9 @@ class PositionGenerator:
                     'sku': mission_item.sku,
                     'qty_missing': float(mission_item.qty_missing) if mission_item.qty_missing else 0,
                     'n_ordine': mission_item.n_ordine,
-                    'n_lista': mission_item.n_lista
+                    'n_lista': mission_item.n_lista,
+                    'cesta': mission_item.cesta or (mission_obj.cesta if mission_obj else None),
+
                 }
                 
         except Exception as e:
