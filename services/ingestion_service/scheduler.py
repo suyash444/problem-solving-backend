@@ -11,6 +11,7 @@ IMPROVEMENTS:
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
 from loguru import logger
+from pytz import timezone
 
 from config.settings import settings
 from .dumptrack_importer import DumptrackImporter
@@ -22,7 +23,9 @@ class ImportScheduler:
     """Handles scheduled automatic imports"""
     
     def __init__(self):
-        self.scheduler = BackgroundScheduler()
+        self.scheduler = BackgroundScheduler(
+            timezone=timezone("Europe/Rome")
+            )
         self.dumptrack_importer = DumptrackImporter()
         self.monitor_importer = MonitorImporter()
         self.api_client = PowerStoreAPIClient()

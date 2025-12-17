@@ -32,7 +32,7 @@ problem-solving-backend/
 ### 1. Prerequisites
 - Python 3.9+
 - SQL Server (with ProblemSolvingTrackerDB created)
-- Access to file paths: `H:/tek/MSBD/DumpTrack/old` and `H:/tek/MSBD/Monitor/old`
+- Access to file paths: `H:/tek/MSBD/DumpTrack` and `H:/tek/MSBD/Monitor`
 
 ### 2. Install Dependencies
 ```bash

@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  problem-solving-api:
+    image: costarcc/problem-solving-api:V1.00
+    container_name: problem-solving-api
+    env_file:
+      - .env
+    ports:
+      - "9000:9000"
+    restart: unless-stopped

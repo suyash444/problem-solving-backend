@@ -22,7 +22,7 @@ api_client = PowerStoreAPIClient()
 async def import_dumptrack_auto():
     """
     Automatic DumpTrack import - finds and imports latest file
-    Runs daily at 5:30 AM via scheduler
+    Runs daily at 5:00 AM via scheduler
     Automatically rebuilds UDC inventory after import
     """
     result = dumptrack_importer.import_latest()
@@ -117,7 +117,7 @@ async def import_prelievo_manual(
 async def import_monitor_auto():
     """
     Automatic Monitor import - imports yesterday's file
-    Runs daily at 5:30 AM via scheduler
+    Runs daily at 5:00 AM via scheduler
     """
     result = monitor_importer.import_yesterday()
     
