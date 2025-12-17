@@ -7,6 +7,8 @@ FIX: Changed 'PENDING' to 'TO_CHECK' to match SQL schema
 from typing import List, Dict, Optional
 from loguru import logger
 
+from sqlalchemy import exists, and_
+
 from shared.database import get_db_context
 from shared.database.models import Mission, MissionItem, PositionCheck
 from shared.schemas import mission
@@ -133,7 +135,6 @@ class PositionGenerator:
                     'n_ordine': mission_item.n_ordine,
                     'n_lista': mission_item.n_lista,
                     'cesta': mission_item.cesta or (mission_obj.cesta if mission_obj else None),
-
                 }
                 
         except Exception as e:
@@ -241,7 +242,7 @@ class PositionGenerator:
         List all missions with optional status filter
         
         Args:
-            status: Filter by status (OPEN, IN_PROGRESS, COMPLETED, CANCELLED)
+            status: Filter by status (OPEN, IN_PROGRESS, COMPLETED, CANCELLED, PENDING, HAS_NOT_FOUND, ALL)
             limit: Maximum number of results
             
         Returns:
@@ -253,7 +254,31 @@ class PositionGenerator:
                 
                 # Apply status filter if provided
                 if status and status.strip():
-                    query = query.filter(Mission.status == status.upper())
+                    s = status.strip().upper()
+
+                    if s == "ALL":
+                        pass
+
+                    elif s == "PENDING":
+                        # OPEN + IN_PROGRESS
+                        query = query.filter(Mission.status.in_(["OPEN", "IN_PROGRESS"]))
+
+                    elif s == "HAS_NOT_FOUND":
+                        # Missions that have at least one NOT_FOUND check
+                        not_found_exists = exists().where(
+                            and_(
+                                PositionCheck.mission_id == Mission.id,
+                                PositionCheck.status == "NOT_FOUND",
+                            )
+                        )
+                        # Usually you want these only if mission is not completed
+                        query = query.filter(not_found_exists).filter(
+                            Mission.status.in_(["OPEN", "IN_PROGRESS"])
+                        )
+
+                    else:
+                        # Exact status match
+                        query = query.filter(Mission.status == s)
                 
                 # Get missions ordered by most recent first
                 missions = query.order_by(
