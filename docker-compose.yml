@@ -8,4 +8,7 @@ services:
       - .env
     ports:
       - "9000:9000"
+    volumes:
+      - /mnt/teklog/DumpTrack:/data/DumpTrack
+      - /mnt/teklog/Monitor:/data/Monitor
     restart: unless-stopped
