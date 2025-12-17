@@ -96,7 +96,7 @@ async def health_check():
 async def trigger_scheduler():
     """
     Manually trigger the daily import job (for testing)
-    Normally runs automatically at 5:30 AM
+    Normally runs automatically at 5:00 AM
     """
     try:
         scheduler.run_now()
