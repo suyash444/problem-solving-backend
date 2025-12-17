@@ -286,16 +286,31 @@ class CheckHandler:
         
         # Update mission status
         if resolved_items == total_items:
+            if not mission.started_at:
+                mission.started_at =  datetime.utcnow()
             mission.status = 'COMPLETED'
             mission.completed_at = datetime.utcnow()
             logger.info(f"✓✓✓ Mission {mission.mission_code} COMPLETED!")
         elif pending_checks == 0 and resolved_items < total_items:
-            mission.status = 'COMPLETED'
-            mission.completed_at = datetime.utcnow()
-            logger.info(f"Mission {mission.mission_code} completed (all checks done, {total_items - resolved_items} items still missing)")
+            # All positions checked but some items are still missing:
+            #  keep mission OPEN/IN_PROGRESS (do not close)
+            if mission.status == 'OPEN':
+                mission.status = 'IN_PROGRESS'
+                if not mission.started_at:
+                    mission.started_at = datetime.utcnow()
+
+            # Make sure mission is not marked completed
+            mission.completed_at = None
+
+            logger.info(
+                f"Mission {mission.mission_code} still pending "
+                f"(all checks done, {total_items - resolved_items} items still missing)"
+            )
+            
         elif completed_checks > 0 and mission.status == 'OPEN':
             mission.status = 'IN_PROGRESS'
-            mission.started_at = datetime.utcnow()
+            if not mission.started_at :
+                mission.started_at = datetime.utcnow()
             logger.info(f"Mission {mission.mission_code} status: OPEN → IN_PROGRESS")
         
         return mission.status
