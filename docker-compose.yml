@@ -2,10 +2,13 @@ version: "3.9"
 
 services:
   problem-solving-api:
-    image: costarcc/problem-solving-api:V1.00
     container_name: problem-solving-api
+    build: .
+    ports:
+      - "9002:9000"
     env_file:
       - .env
-    ports:
-      - "9000:9000"
+    volumes:
+      - ${DUMPTRACK_HOST_PATH}:/data/DumpTrack:ro
+      - ${MONITOR_HOST_PATH}:/data/Monitor:ro
     restart: unless-stopped
