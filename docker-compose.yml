@@ -1,14 +1,17 @@
-version: "3.9"
-
 services:
   problem-solving-api:
     image: costarcc/problem-solving-api:V1.01
     container_name: problem-solving-api
     ports:
       - "9002:9000"
+
+    # App config (Python reads these)
     env_file:
       - .env
+
+    # Host mounts (docker-compose reads these)
     volumes:
       - ${DUMPTRACK_HOST_PATH}:/data/DumpTrack:ro
       - ${MONITOR_HOST_PATH}:/data/Monitor:ro
+
     restart: unless-stopped
