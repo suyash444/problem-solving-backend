@@ -2,7 +2,7 @@
 set -e
 
 IMAGE_NAME=costarcc/problem-solving-api
-VERSION=V1.00
+VERSION=V1.01
 
 echo "Building image ${IMAGE_NAME}:${VERSION}"
 docker build -t ${IMAGE_NAME}:${VERSION} .
