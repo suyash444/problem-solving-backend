@@ -338,11 +338,25 @@ class MonitorImporter:
         Updates existing positions with latest data
         """
         
-        df_sorted = df.sort_values('DataOra', ascending=False)
+        df_sorted = df.copy()
+        if 'DataOra' in df_sorted.columns:
+            df_sorted['DataOra'] = pd.to_datetime(df_sorted['DataOra'], errors='coerce', dayfirst=True)
+        df_sorted = df_sorted.sort_values('DataOra', ascending=False, na_position='last')
         latest_positions = df_sorted.drop_duplicates(subset=['Pallet'], keep='first')
         
         positions_new = 0
         positions_updated = 0
+        
+        def coerce_dt(value):
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value
+            try:
+                dt = pd.to_datetime(value, errors='coerce', dayfirst=True)
+                return dt.to_pydatetime() if pd.notna(dt) else None
+            except:
+                return None
         
         for _, row in latest_positions.iterrows():
             udc = row.get('Pallet')
@@ -360,13 +374,7 @@ class MonitorImporter:
             position_code = '-'.join(position_parts) if position_parts else 'UNKNOWN'
             
             data_ora = row.get('DataOra')
-            if pd.notna(data_ora):
-                try:
-                    last_movement = pd.to_datetime(data_ora, errors='coerce', dayfirst=True).to_pydatetime()
-                except:
-                    last_movement = None
-            else:
-                last_movement = None
+            last_movement = coerce_dt(data_ora)
             
             # Try to find existing location
             location = db.query(UDCLocation).filter(UDCLocation.udc == udc).first()
@@ -374,8 +382,9 @@ class MonitorImporter:
             if location:
                 # UPDATE existing - only if new data is more recent
                 should_update = True
-                if location.last_movement and last_movement:
-                    should_update = last_movement >= location.last_movement
+                loc_last = coerce_dt(location.last_movement)
+                if loc_last and last_movement:
+                    should_update = last_movement >= loc_last
                 
                 if should_update:
                     location.mag = str(row['Mag']) if pd.notna(row.get('Mag')) else None
