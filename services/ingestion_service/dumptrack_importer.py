@@ -151,17 +151,6 @@ class DumptrackImporter:
             logger.info(f"=== ✓✓✓ DumpTrack import complete! {files_imported} files ===")
             logger.info(f"Total: {total_records} new records, {total_skipped} duplicates skipped")
             
-            # AUTO-REBUILD UDC INVENTORY
-            logger.info("=== Auto-rebuilding UDC inventory ===")
-            from services.ingestion_service.rebuild_udc_inventory import rebuild_udc_inventory
-            
-            rebuild_result = rebuild_udc_inventory()
-            
-            if rebuild_result['success']:
-                logger.info(f"✓✓✓ UDC inventory rebuilt: {rebuild_result['records_created']} records")
-            else:
-                logger.error(f"✗ Failed to rebuild UDC inventory: {rebuild_result.get('error')}")
-            
             return {
                 "success": True,
                 "message": f"Imported {files_imported} files with {total_records} new records ({total_skipped} duplicates skipped)",
@@ -169,9 +158,7 @@ class DumptrackImporter:
                 "total_records": total_records,
                 "records_skipped": total_skipped,
                 "orders_processed": total_orders,
-                "items_processed": total_items,
-                "udc_inventory_rebuilt": rebuild_result['success'],
-                "udc_inventory_records": rebuild_result.get('records_created', 0)
+                "items_processed": total_items
             }
             
         except Exception as e:
@@ -505,25 +492,11 @@ class DumptrackImporter:
             return None
     
     def import_latest(self, from_date: Optional[date] = None) -> Dict:
-        """Find and import latest file, then rebuild UDC inventory"""
+        """Find and import latest file"""
         filepath = self.find_latest_file()
         if not filepath:
             return {"success": False, "message": "No file found", "records_imported": 0}
         
         result = self.import_file(filepath, from_date)
-        
-        if result['success'] and result['records_imported'] > 0:
-            logger.info("=== Auto-rebuilding UDC inventory ===")
-            from services.ingestion_service.rebuild_udc_inventory import rebuild_udc_inventory
-            
-            rebuild_result = rebuild_udc_inventory()
-            
-            if rebuild_result['success']:
-                logger.info(f"✓✓✓ UDC inventory rebuilt: {rebuild_result['records_created']} records")
-                result['udc_inventory_rebuilt'] = True
-                result['udc_inventory_records'] = rebuild_result['records_created']
-            else:
-                logger.error(f"✗ Failed to rebuild UDC inventory: {rebuild_result.get('error')}")
-                result['udc_inventory_rebuilt'] = False
         
         return result
