@@ -17,6 +17,7 @@ from config.settings import settings
 from .dumptrack_importer import DumptrackImporter
 from .monitor_importer import MonitorImporter
 from .api_client import PowerStoreAPIClient
+from .rebuild_udc_inventory import rebuild_udc_inventory
 
 
 class ImportScheduler:
@@ -100,6 +101,15 @@ class ImportScheduler:
                 logger.info(f"✓ Prelievo: {prelievo_result.get('records_imported', 0)} new records")
                 logger.info(f"  Skipped: {prelievo_result.get('records_skipped', 0)} duplicates")
                 logger.info(f"  Picking events: {prelievo_result.get('picking_events_created', 0)} new")
+
+                rebuild_result = rebuild_udc_inventory()
+                results["udc_inventory_rebuilt"] = rebuild_result.get("success", False)
+                results["udc_inventory_records"] = rebuild_result.get("records_created", 0)
+                if rebuild_result.get("success"):
+                    logger.info(f"✓ UDC inventory rebuilt: {rebuild_result.get('records_created', 0)} records")
+                else:
+                    logger.error(f"✗ UDC inventory rebuild failed: {rebuild_result.get('error')}")
+                    results["success"] = False
             else:
                 logger.error(f"✗ Prelievo failed: {prelievo_result.get('message')}")
                 results["success"] = False
