@@ -9,6 +9,7 @@ from typing import Optional
 from services.ingestion_service.dumptrack_importer import DumptrackImporter
 from services.ingestion_service.monitor_importer import MonitorImporter
 from services.ingestion_service.api_client import PowerStoreAPIClient
+from services.ingestion_service.rebuild_udc_inventory import rebuild_udc_inventory
 
 router = APIRouter(prefix="/imports", tags=["Imports"])
 
@@ -23,13 +24,12 @@ async def import_dumptrack_auto():
     """
     Automatic DumpTrack import - finds and imports latest file
     Runs daily at 5:00 AM via scheduler
-    Automatically rebuilds UDC inventory after import
     """
     result = dumptrack_importer.import_latest()
-    
+
     if not result['success']:
         raise HTTPException(status_code=400, detail=result['message'])
-    
+
     return result
 
 
@@ -41,29 +41,28 @@ async def import_dumptrack_manual(
     """
     Manual DumpTrack import with date range
     User must specify start and end date
-    Automatically rebuilds UDC inventory after import
-    
+
     Example: 2025-11-21 to 2025-12-11
     """
     try:
         # Parse dates
         start = date.fromisoformat(start_date)
         end = date.fromisoformat(end_date)
-        
+
         if start > end:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="start_date must be before or equal to end_date"
             )
-        
+
         # Import with date range
         result = dumptrack_importer.import_date_range(start, end)
-        
+
         if not result['success']:
             raise HTTPException(status_code=400, detail=result['message'])
-        
+
         return result
-        
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid date format. Use YYYY-MM-DD: {str(e)}")
     except HTTPException:
@@ -80,31 +79,39 @@ async def import_prelievo_manual(
     """
     Manual PrelievoPowerSort API import
     User must specify start and end date range
-    
+
     Example: 2025-11-21 to 2025-12-11
     """
     try:
         # Parse dates
         start = date.fromisoformat(start_date)
         end = date.fromisoformat(end_date)
-        
+
         if start > end:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="start_date must be before or equal to end_date"
             )
-        
-        # Import from API
+
+        # Import from API (creates picking_events)
         result = api_client.call_prelievo_powersort(
             start_date=start,
             end_date=end
         )
-        
+
         if not result['success']:
             raise HTTPException(status_code=400, detail=result['message'])
-        
+
+        # IMPORTANT: rebuild UDC inventory after picking events import
+        rebuild_result = rebuild_udc_inventory()
+
+        result["udc_inventory_rebuilt"] = rebuild_result.get("success", False)
+        result["udc_inventory_records"] = rebuild_result.get("records_created", 0)
+        if not rebuild_result.get("success"):
+            result["udc_inventory_error"] = rebuild_result.get("error")
+
         return result
-        
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid date format. Use YYYY-MM-DD: {str(e)}")
     except HTTPException:
@@ -120,10 +127,10 @@ async def import_monitor_auto():
     Runs daily at 5:00 AM via scheduler
     """
     result = monitor_importer.import_yesterday()
-    
+
     if not result['success']:
         raise HTTPException(status_code=400, detail=result['message'])
-    
+
     return result
 
 
@@ -135,28 +142,28 @@ async def import_monitor_manual(
     """
     Manual Monitor import with date range
     User must specify start and end date
-    
+
     Example: 2025-11-21 to 2025-12-11
     """
     try:
         # Parse dates
         start = date.fromisoformat(start_date)
         end = date.fromisoformat(end_date)
-        
+
         if start > end:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="start_date must be before or equal to end_date"
             )
-        
+
         # Import with date range
         result = monitor_importer.import_date_range(start, end)
-        
+
         if not result['success']:
             raise HTTPException(status_code=400, detail=result['message'])
-        
+
         return result
-        
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid date format. Use YYYY-MM-DD: {str(e)}")
     except HTTPException:
@@ -175,24 +182,24 @@ async def get_import_status():
         from shared.database import get_db_context
         from shared.database.models import ImportLog
         from sqlalchemy import func
-        
+
         with get_db_context() as db:
             # Get latest imports for each source
             dumptrack_latest = db.query(ImportLog).filter(
                 ImportLog.source_type == 'DUMPTRACK',
                 ImportLog.status == 'SUCCESS'
             ).order_by(ImportLog.import_completed_at.desc()).first()
-            
+
             monitor_latest = db.query(ImportLog).filter(
                 ImportLog.source_type == 'MONITOR',
                 ImportLog.status == 'SUCCESS'
             ).order_by(ImportLog.import_completed_at.desc()).first()
-            
+
             prelievo_latest = db.query(ImportLog).filter(
                 ImportLog.source_type == 'PRELIEVO',
                 ImportLog.status == 'SUCCESS'
             ).order_by(ImportLog.import_completed_at.desc()).first()
-            
+
             # Get total counts
             total_imports = db.query(func.count(ImportLog.id)).scalar()
             successful_imports = db.query(func.count(ImportLog.id)).filter(
@@ -201,7 +208,7 @@ async def get_import_status():
             failed_imports = db.query(func.count(ImportLog.id)).filter(
                 ImportLog.status == 'FAILED'
             ).scalar()
-            
+
             return {
                 "success": True,
                 "total_imports": total_imports,
@@ -225,6 +232,6 @@ async def get_import_status():
                     }
                 }
             }
-            
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}")

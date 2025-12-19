@@ -100,13 +100,23 @@ class PowerStoreAPIClient:
             
             logger.info(f"✓✓✓ SUCCESS! Imported {raw_result['inserted']} new records from PrelievoPowerSort")
             
+            from services.ingestion_service.rebuild_udc_inventory import rebuild_udc_inventory
+            rebuild_result = rebuild_udc_inventory()
+            
+            if rebuild_result.get('success'):
+                logger.info(f"✓✓✓ UDC inventory rebuilt: {rebuild_result.get('records_created', 0)} records")
+            else:
+                logger.error(f"✗ Failed to rebuild UDC inventory: {rebuild_result.get('error')}")
+            
             return {
                 "success": True,
                 "message": f"Successfully imported {raw_result['inserted']} new records ({raw_result['skipped']} duplicates skipped)",
                 "records_imported": raw_result['inserted'],
                 "records_skipped": raw_result['skipped'],
                 "picking_events_created": events_result['inserted'],
-                "picking_events_skipped": events_result['skipped']
+                "picking_events_skipped": events_result['skipped'],
+                "udc_inventory_rebuilt": rebuild_result.get("success", False),
+                "udc_inventory_records": rebuild_result.get("records_created", 0)
             }
             
         except requests.exceptions.RequestException as e:
