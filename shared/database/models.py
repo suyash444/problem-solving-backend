@@ -1,13 +1,29 @@
 """
 SQLAlchemy ORM Models for Problem Solving Tracker
 Maps to database tables in ProblemSolvingTrackerDB
+
+MULTI-COMPANY SAFE VERSION:
+- Adds `company` column to isolate data per company.
+- Keeps existing relationships intact.
+- Mirrors DB constraints: orders/import_log/udc_inventory unique keys updated for company.
+- Mirrors DB PK: udc_locations uses composite PK(company, udc).
 """
+from datetime import datetime
+
 from sqlalchemy import (
-    Column, BigInteger, String, DateTime, Numeric, Integer, 
-    Boolean, ForeignKey, Text, Date, func
+    Column,
+    BigInteger,
+    String,
+    DateTime,
+    Numeric,
+    Integer,
+    Boolean,
+    ForeignKey,
+    Date,
+    UniqueConstraint,
+    Text,
 )
 from sqlalchemy.orm import relationship
-from datetime import datetime
 
 from .connection import Base
 
@@ -17,9 +33,12 @@ from .connection import Base
 # ============================================================================
 
 class ImportDumptrack(Base):
-    __tablename__ = 'import_dumptrack'
-    
+    __tablename__ = "import_dumptrack"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    company = Column(String(50), nullable=False, index=True)
+
     Batch = Column(BigInteger)
     OrdinePrivalia = Column(String(50))
     DataRegistrazione = Column(DateTime)
@@ -41,14 +60,18 @@ class ImportDumptrack(Base):
     CodiceProprieta = Column(String(20))
     StatoArticolo = Column(String(50))
     Uds = Column(String(50))
+
     source_file = Column(String(500))
     imported_at = Column(DateTime, default=datetime.utcnow)
 
 
 class ImportMonitor(Base):
-    __tablename__ = 'import_monitor'
-    
+    __tablename__ = "import_monitor"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    company = Column(String(50), nullable=False, index=True)
+
     DataOra = Column(DateTime)
     Movimento = Column(String(80))
     Pallet = Column(String(50))
@@ -80,14 +103,18 @@ class ImportMonitor(Base):
     Riga = Column(Integer)
     QtaCorrente = Column(Numeric(18, 4))
     DeltaQTA = Column(Numeric(18, 4))
+
     source_file = Column(String(500))
     imported_at = Column(DateTime, default=datetime.utcnow)
 
 
 class ImportPrelievo(Base):
-    __tablename__ = 'import_prelievo_powersort'
-    
+    __tablename__ = "import_prelievo_powersort"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    company = Column(String(50), nullable=False, index=True)
+
     Listone = Column(BigInteger)
     Carrello = Column(String(50))
     UDC = Column(String(50))
@@ -98,13 +125,17 @@ class ImportPrelievo(Base):
     DataPrelievo = Column(DateTime)
     CodiceProprieta = Column(String(20))
     Azienda = Column(String(100))
+
     imported_at = Column(DateTime, default=datetime.utcnow)
 
 
 class ImportSpedito(Base):
-    __tablename__ = 'import_spedito'
-    
+    __tablename__ = "import_spedito"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    company = Column(String(50), nullable=False, index=True)
+
     CodiceProprieta = Column(String(20))
     Azienda = Column(String(100))
     Vettore = Column(String(80))
@@ -117,6 +148,7 @@ class ImportSpedito(Base):
     Cesta = Column(String(50))
     CodiceLetto = Column(String(80))
     DataOra = Column(DateTime)
+
     imported_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -125,24 +157,33 @@ class ImportSpedito(Base):
 # ============================================================================
 
 class Order(Base):
-    __tablename__ = 'orders'
-    
+    __tablename__ = "orders"
+
+    __table_args__ = (
+        UniqueConstraint("company", "order_number", name="UQ_orders_company_order_number"),
+    )
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    order_number = Column(String(50), unique=True, nullable=False)
+
+    company = Column(String(50), nullable=False, index=True)
+    order_number = Column(String(50), nullable=False)
+
     data_registrazione = Column(DateTime)
     commessa = Column(String(50))
     codice_proprieta = Column(String(20))
     created_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Relationships
+
     items = relationship("OrderItem", back_populates="order")
 
 
 class OrderItem(Base):
-    __tablename__ = 'order_items'
-    
+    __tablename__ = "order_items"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    order_id = Column(BigInteger, ForeignKey('orders.id'), nullable=False)
+
+    company = Column(String(50), nullable=False, index=True)
+
+    order_id = Column(BigInteger, ForeignKey("orders.id"), nullable=False)
     n_lista = Column(BigInteger, nullable=False)
     listone = Column(BigInteger)
     sku = Column(String(80), nullable=False)
@@ -151,32 +192,43 @@ class OrderItem(Base):
     cesta = Column(String(50))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Relationships
+
     order = relationship("Order", back_populates="items")
     picking_events = relationship("PickingEvent", back_populates="order_item")
 
 
 class PickingEvent(Base):
-    __tablename__ = 'picking_events'
-    
+    __tablename__ = "picking_events"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    order_item_id = Column(BigInteger, ForeignKey('order_items.id'), nullable=False)
+
+    company = Column(String(50), nullable=False, index=True)
+
+    order_item_id = Column(BigInteger, ForeignKey("order_items.id"), nullable=False)
     udc = Column(String(50), nullable=False)
     carrello = Column(String(50))
     qty_picked = Column(Numeric(18, 3), nullable=False)
     operator = Column(String(50))
     picked_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Relationships
+
     order_item = relationship("OrderItem", back_populates="picking_events")
 
 
 class UDCInventory(Base):
-    __tablename__ = 'udc_inventory'
-    
+    __tablename__ = "udc_inventory"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company", "udc", "sku", "listone",
+            name="UQ_udc_inventory_company_udc_sku_listone",
+        ),
+    )
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    company = Column(String(50), nullable=False, index=True)
+
     udc = Column(String(50), nullable=False)
     sku = Column(String(80), nullable=False)
     listone = Column(BigInteger, nullable=False)
@@ -185,9 +237,11 @@ class UDCInventory(Base):
 
 
 class UDCLocation(Base):
-    __tablename__ = 'udc_locations'
-    
-    udc = Column(String(50), primary_key=True)
+    __tablename__ = "udc_locations"
+
+    company = Column(String(50), primary_key=True, nullable=False)
+    udc = Column(String(50), primary_key=True, nullable=False)
+
     mag = Column(String(20))
     scaf = Column(String(20))
     col = Column(String(20))
@@ -200,14 +254,18 @@ class UDCLocation(Base):
 
 
 class ShippedItem(Base):
-    __tablename__ = 'shipped_items'
-    
+    __tablename__ = "shipped_items"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    company = Column(String(50), nullable=False, index=True)
+
     cesta = Column(String(500), nullable=False)
     n_ordine = Column(String(50), nullable=False)
     n_lista = Column(BigInteger, nullable=False)
     sku = Column(String(80), nullable=False)
     qty_shipped = Column(Numeric(18, 3), nullable=False)
+
     descrizione = Column(String(255))
     sovracollo = Column(String(50))
     vettore = Column(String(80))
@@ -220,62 +278,80 @@ class ShippedItem(Base):
 # ============================================================================
 
 class Mission(Base):
-    __tablename__ = 'missions'
-    
+    __tablename__ = "missions"
+
+    __table_args__ = (
+        UniqueConstraint("company", "mission_code", name="UQ_missions_company_mission_code"),
+    )
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    mission_code = Column(String(50), unique=True, nullable=False)
-    cesta = Column(String(50), nullable=False)
+
+    company = Column(String(50), nullable=False, index=True)
+
+    mission_code = Column(String(50),  nullable=False)
+    cesta = Column(String(500), nullable=False)
     reference_n_lista = Column(BigInteger, nullable=True)
-    status = Column(String(20), default='OPEN', nullable=False)
+    status = Column(String(20), default="OPEN", nullable=False)
+
     created_by = Column(String(50))
     created_at = Column(DateTime, default=datetime.utcnow)
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
-    
-    # Relationships
+
     items = relationship("MissionItem", back_populates="mission")
     checks = relationship("PositionCheck", back_populates="mission")
 
 
 class MissionItem(Base):
-    __tablename__ = 'mission_items'
-    
+    __tablename__ = "mission_items"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    mission_id = Column(BigInteger, ForeignKey('missions.id'), nullable=False)
+
+    company = Column(String(50), nullable=False, index=True)
+
+    mission_id = Column(BigInteger, ForeignKey("missions.id"), nullable=False)
+
     cesta = Column(String(50), nullable=True)
     n_ordine = Column(String(50), nullable=False)
     n_lista = Column(BigInteger, nullable=False)
     sku = Column(String(80), nullable=False)
+
     listone = Column(Integer)
     qty_ordered = Column(Numeric(18, 3), nullable=False)
     qty_shipped = Column(Numeric(18, 3), nullable=False)
     qty_missing = Column(Numeric(18, 3), nullable=False)
     qty_found = Column(Numeric(18, 3), default=0, nullable=False)
+
     is_resolved = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime)
-    
-    # Relationships
+
     mission = relationship("Mission", back_populates="items")
     checks = relationship("PositionCheck", back_populates="mission_item")
 
+
 class PositionCheck(Base):
-    __tablename__ = 'position_checks'
-    
+    __tablename__ = "position_checks"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    mission_id = Column(BigInteger, ForeignKey('missions.id'), nullable=False)
-    mission_item_id = Column(BigInteger, ForeignKey('mission_items.id'), nullable=False)
+
+    company = Column(String(50), nullable=False, index=True)
+
+    mission_id = Column(BigInteger, ForeignKey("missions.id"), nullable=False)
+    mission_item_id = Column(BigInteger, ForeignKey("mission_items.id"), nullable=False)
+
     position_code = Column(String(120), nullable=False)
     udc = Column(String(50))
     listone = Column(BigInteger)
-    status = Column(String(30), default='TO_CHECK', nullable=False)
+
+    status = Column(String(30), default="TO_CHECK", nullable=False)
     found_in_position = Column(Boolean)
     qty_found = Column(Numeric(18, 3))
+
     checked_at = Column(DateTime)
     checked_by = Column(String(50))
     notes = Column(String(500))
-    
-    # Relationships
+
     mission = relationship("Mission", back_populates="checks")
     mission_item = relationship("MissionItem", back_populates="checks")
 
@@ -285,15 +361,29 @@ class PositionCheck(Base):
 # ============================================================================
 
 class ImportLog(Base):
-    __tablename__ = 'import_log'
-    
+    __tablename__ = "import_log"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company", "source_type", "file_hash",
+            name="UQ_import_log_company_source_hash",
+        ),
+    )
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    company = Column(String(50), nullable=False, index=True)
+
     source_type = Column(String(50), nullable=False)
-    file_path = Column(String(500), nullable=True, default='')
+    file_path = Column(String(500), nullable=True, default="")
     file_hash = Column(String(64), nullable=False)
     file_date = Column(Date, nullable=True)
+
     records_imported = Column(Integer, nullable=True, default=0)
     import_started_at = Column(DateTime, default=datetime.utcnow)
     import_completed_at = Column(DateTime, nullable=True)
-    status = Column(String(20), default='SUCCESS', nullable=False)
-    error_message = Column(String(500), nullable=True, default='')  # Changed from Text
+
+    status = Column(String(20), default="SUCCESS", nullable=False)
+
+    # DB column is NVARCHAR(MAX) (you altered it), so Text is correct here
+    error_message = Column(Text, nullable=True)
