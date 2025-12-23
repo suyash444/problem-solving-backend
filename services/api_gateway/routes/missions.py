@@ -223,7 +223,8 @@ async def update_mission_status(
         check_handler = CheckHandler()
 
         # FIX: CheckHandler.update_mission_status does not accept `company`
-        result = check_handler.update_mission_status(mission_id=mission_id, new_status=request.new_status)
+        result = check_handler.update_mission_status(company=company, mission_id=mission_id, new_status=request.new_status)
+
 
         if not result.get("success", False):
             raise HTTPException(status_code=400, detail=result.get("message", "Unknown error"))
