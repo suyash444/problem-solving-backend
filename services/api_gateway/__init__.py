@@ -1,1 +1,1 @@
-# API Gateway - Main FastAPI application
+# API Gateway -  FastAPI application

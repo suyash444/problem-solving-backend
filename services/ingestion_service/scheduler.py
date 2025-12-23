@@ -22,121 +22,134 @@ from .rebuild_udc_inventory import rebuild_udc_inventory
 
 class ImportScheduler:
     """Handles scheduled automatic imports"""
-    
+
     def __init__(self):
-        self.scheduler = BackgroundScheduler(
-            timezone=timezone("Europe/Rome")
-            )
+        self.scheduler = BackgroundScheduler(timezone=timezone("Europe/Rome"))
         self.dumptrack_importer = DumptrackImporter()
         self.monitor_importer = MonitorImporter()
         self.api_client = PowerStoreAPIClient()
-    
+
     def daily_import_job(self):
         """
         Job that runs daily
-        
-        Import order:
-        1. DumpTrack (orders) - latest file, contains ~30 days of data
-        2. Prelievo (picking events) - last 7 days to ensure we catch all picks
-        3. Monitor (UDC positions) - yesterday only (positions are daily snapshots)
-        
-        All importers skip duplicates, so overlapping data is safe!
+
+        For EACH company:
+        1. DumpTrack (orders) - latest file
+        2. Prelievo (picking events) - last 7 days
+        3. Rebuild UDC inventory (PER COMPANY)
+        4. Monitor (UDC positions) - yesterday only
         """
         logger.info("=" * 60)
         logger.info("STARTING SCHEDULED DAILY IMPORT JOB")
         logger.info("=" * 60)
-        
+
         today = datetime.now().date()
         yesterday = today - timedelta(days=1)
-        
+
+        companies = list(settings.COMPANIES.keys())
+
         results = {
-            "dumptrack": None,
-            "prelievo": None,
-            "monitor": None,
+            "companies": {},
             "success": True
         }
-        
-        try:
-            # ============================================
-            # STEP 1: Import DumpTrack (latest file)
-            # ============================================
-            logger.info("")
-            logger.info("=" * 40)
-            logger.info("STEP 1/3: Importing DumpTrack")
-            logger.info("=" * 40)
-            
-            dumptrack_result = self.dumptrack_importer.import_latest()
-            results["dumptrack"] = dumptrack_result
-            
-            if dumptrack_result.get('success'):
-                logger.info(f"✓ DumpTrack: {dumptrack_result.get('records_imported', 0)} new records")
-                logger.info(f"  Skipped: {dumptrack_result.get('records_skipped', 0)} duplicates")
-            else:
-                logger.error(f"✗ DumpTrack failed: {dumptrack_result.get('message')}")
-                results["success"] = False
-            
-            # ============================================
-            # STEP 2: Import PrelievoPowerSort
-            # Import last 7 days to ensure all picking events are captured
-            # Duplicates will be skipped automatically
-            # ============================================
-            logger.info("")
-            logger.info("=" * 40)
-            logger.info("STEP 2/3: Importing PrelievoPowerSort (last 7 days)")
-            logger.info("=" * 40)
-            
-            # Import last 7 days of picking data
-            prelievo_start = today - timedelta(days=7)
-            prelievo_end = yesterday
-            
-            logger.info(f"  Date range: {prelievo_start} to {prelievo_end}")
-            
-            prelievo_result = self.api_client.call_prelievo_powersort(
-                start_date=prelievo_start,
-                end_date=prelievo_end
-            )
-            results["prelievo"] = prelievo_result
-            
-            if prelievo_result.get('success'):
-                logger.info(f"✓ Prelievo: {prelievo_result.get('records_imported', 0)} new records")
-                logger.info(f"  Skipped: {prelievo_result.get('records_skipped', 0)} duplicates")
-                logger.info(f"  Picking events: {prelievo_result.get('picking_events_created', 0)} new")
 
-                rebuild_result = rebuild_udc_inventory()
-                results["udc_inventory_rebuilt"] = rebuild_result.get("success", False)
-                results["udc_inventory_records"] = rebuild_result.get("records_created", 0)
-                if rebuild_result.get("success"):
-                    logger.info(f"✓ UDC inventory rebuilt: {rebuild_result.get('records_created', 0)} records")
+        try:
+            for company_key in companies:
+                logger.info("")
+                logger.info("=" * 60)
+                logger.info(f"COMPANY: {company_key}")
+                logger.info("=" * 60)
+
+                company_results = {
+                    "dumptrack": None,
+                    "prelievo": None,
+                    "monitor": None,
+                    "udc_inventory_rebuilt": False,
+                    "udc_inventory_records": 0,
+                    "success": True
+                }
+
+                # ============================================
+                # STEP 1: DumpTrack (latest)
+                # ============================================
+                logger.info("")
+                logger.info("=" * 40)
+                logger.info("STEP 1/3: Importing DumpTrack")
+                logger.info("=" * 40)
+
+                dumptrack_result = self.dumptrack_importer.import_latest(company=company_key)
+                company_results["dumptrack"] = dumptrack_result
+
+                if dumptrack_result.get("success"):
+                    logger.info(f"✓ DumpTrack: {dumptrack_result.get('records_imported', 0)} new records")
+                    logger.info(f"  Skipped: {dumptrack_result.get('records_skipped', 0)} duplicates")
                 else:
-                    logger.error(f"✗ UDC inventory rebuild failed: {rebuild_result.get('error')}")
+                    logger.error(f"✗ DumpTrack failed: {dumptrack_result.get('message')}")
+                    company_results["success"] = False
+
+                # ============================================
+                # STEP 2: Prelievo (last 7 days) + rebuild UDC inventory
+                # ============================================
+                logger.info("")
+                logger.info("=" * 40)
+                logger.info("STEP 2/3: Importing PrelievoPowerSort (last 7 days)")
+                logger.info("=" * 40)
+
+                prelievo_start = today - timedelta(days=7)
+                prelievo_end = yesterday
+
+                logger.info(f"  Date range: {prelievo_start} to {prelievo_end}")
+
+                prelievo_result = self.api_client.call_prelievo_powersort(
+                    start_date=prelievo_start,
+                    end_date=prelievo_end,
+                    company=company_key
+                )
+                company_results["prelievo"] = prelievo_result
+
+                if prelievo_result.get("success"):
+                    logger.info(f"✓ Prelievo: {prelievo_result.get('records_imported', 0)} new records")
+                    logger.info(f"  Skipped: {prelievo_result.get('records_skipped', 0)} duplicates")
+                    logger.info(f"  Picking events: {prelievo_result.get('picking_events_created', 0)} new")
+
+                    # IMPORTANT: rebuild inventory PER COMPANY
+                    rebuild_result = rebuild_udc_inventory(company=company_key)
+                    company_results["udc_inventory_rebuilt"] = rebuild_result.get("success", False)
+                    company_results["udc_inventory_records"] = rebuild_result.get("records_created", 0)
+
+                    if rebuild_result.get("success"):
+                        logger.info(f"✓ UDC inventory rebuilt: {rebuild_result.get('records_created', 0)} records")
+                    else:
+                        logger.error(f"✗ UDC inventory rebuild failed: {rebuild_result.get('error')}")
+                        company_results["success"] = False
+                else:
+                    logger.error(f"✗ Prelievo failed: {prelievo_result.get('message')}")
+                    company_results["success"] = False
+
+                # ============================================
+                # STEP 3: Monitor (yesterday)
+                # ============================================
+                logger.info("")
+                logger.info("=" * 40)
+                logger.info("STEP 3/3: Importing Monitor (yesterday)")
+                logger.info("=" * 40)
+
+                monitor_result = self.monitor_importer.import_yesterday(company=company_key)
+                company_results["monitor"] = monitor_result
+
+                if monitor_result.get("success"):
+                    logger.info(f"✓ Monitor: {monitor_result.get('records_imported', 0)} new records")
+                    logger.info(f"  Skipped: {monitor_result.get('records_skipped', 0)} duplicates")
+                    logger.info(f"  Positions: {monitor_result.get('positions_new', 0)} new, {monitor_result.get('positions_updated', 0)} updated")
+                else:
+                    logger.warning(f"⚠ Monitor: {monitor_result.get('message')}")
+                    # Monitor failure is not critical (weekend/holiday)
+
+                results["companies"][company_key] = company_results
+
+                if not company_results["success"]:
                     results["success"] = False
-            else:
-                logger.error(f"✗ Prelievo failed: {prelievo_result.get('message')}")
-                results["success"] = False
-            
-            # ============================================
-            # STEP 3: Import Monitor (yesterday)
-            # Monitor files are daily snapshots, so only need yesterday
-            # ============================================
-            logger.info("")
-            logger.info("=" * 40)
-            logger.info("STEP 3/3: Importing Monitor (yesterday)")
-            logger.info("=" * 40)
-            
-            monitor_result = self.monitor_importer.import_yesterday()
-            results["monitor"] = monitor_result
-            
-            if monitor_result.get('success'):
-                logger.info(f"✓ Monitor: {monitor_result.get('records_imported', 0)} new records")
-                logger.info(f"  Skipped: {monitor_result.get('records_skipped', 0)} duplicates")
-                logger.info(f"  Positions: {monitor_result.get('positions_new', 0)} new, {monitor_result.get('positions_updated', 0)} updated")
-            else:
-                logger.warning(f"⚠ Monitor: {monitor_result.get('message')}")
-                # Monitor failure is not critical (might be weekend/holiday)
-            
-            # ============================================
-            # SUMMARY
-            # ============================================
+
             logger.info("")
             logger.info("=" * 60)
             if results["success"]:
@@ -144,9 +157,9 @@ class ImportScheduler:
             else:
                 logger.warning("⚠⚠⚠ DAILY IMPORT JOB COMPLETED WITH ERRORS")
             logger.info("=" * 60)
-            
+
             return results
-            
+
         except Exception as e:
             logger.error(f"❌ CRITICAL ERROR in daily import job: {e}")
             import traceback
@@ -154,7 +167,7 @@ class ImportScheduler:
             results["success"] = False
             results["error"] = str(e)
             return results
-    
+
     def start(self):
         """Start the scheduler"""
         self.scheduler.add_job(
@@ -165,39 +178,28 @@ class ImportScheduler:
             id='daily_import',
             replace_existing=True
         )
-        
+
         self.scheduler.start()
         logger.info(f"Scheduler started - Daily imports at {settings.IMPORT_SCHEDULE_HOUR}:{settings.IMPORT_SCHEDULE_MINUTE:02d}")
-    
+
     def stop(self):
         """Stop the scheduler"""
         self.scheduler.shutdown()
         logger.info("Scheduler stopped")
-    
+
     def run_now(self):
-        """
-        Manually trigger the daily import job
-        Called via POST /scheduler/trigger endpoint
-        """
+        """Manually trigger the daily import job"""
         logger.info("Manually triggering daily import job via API")
         return self.daily_import_job()
 
 
-# ============================================
-# ALTERNATIVE: For Windows Task Scheduler
-# ============================================
 def run_daily_import():
-    """
-    Standalone function to run daily import
-    Can be called directly from Windows Task Scheduler:
-    
-    python -c "from services.ingestion_service.scheduler import run_daily_import; run_daily_import()"
-    """
+    """Standalone function to run daily import (Task Scheduler compatible)"""
     logger.info("Running daily import via standalone function")
-    
+
     scheduler = ImportScheduler()
     result = scheduler.daily_import_job()
-    
+
     if result.get("success"):
         logger.info("Daily import completed successfully")
         return 0
@@ -207,6 +209,5 @@ def run_daily_import():
 
 
 if __name__ == "__main__":
-    # Allow running directly: python scheduler.py
     import sys
     sys.exit(run_daily_import())

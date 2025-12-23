@@ -2,9 +2,10 @@
 Monitor CSV Importer - FIXED VERSION WITH DUPLICATE HANDLING
 Imports UDC position data from Monitor files
 
-FIX: 
-- Raw data: Skip duplicates (same UDC + Article + DateTime)
-- UDC Locations: Update existing records (positions can change)
+MULTI-COMPANY UPDATE:
+- Writes `company` into ImportMonitor / UDCLocation / ImportLog
+- Duplicate checks are filtered by company
+- UDCLocation uses composite PK (company, udc)
 """
 import os
 import hashlib
@@ -21,10 +22,10 @@ from config.settings import settings
 
 class MonitorImporter:
     """Handles Monitor file imports with duplicate handling"""
-    
+
     def __init__(self):
         self.source_path = settings.MONITOR_PATH
-        
+
     def get_file_hash(self, filepath: str) -> str:
         """Calculate SHA256 hash of file to detect duplicates"""
         sha256_hash = hashlib.sha256()
@@ -32,36 +33,41 @@ class MonitorImporter:
             for byte_block in iter(lambda: f.read(4096), b""):
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
-    
-    def is_already_imported(self, file_hash: str) -> bool:
-        """Check if file was already imported"""
+
+    def is_already_imported(self, file_hash: str, company: str) -> bool:
+        """Check if file was already imported (PER COMPANY)"""
         with get_db_context() as db:
             exists = db.query(ImportLog).filter(
+                ImportLog.company == company,
                 ImportLog.source_type == 'MONITOR',
                 ImportLog.file_hash == file_hash
             ).first()
             return exists is not None
-    
-    def find_files_in_date_range(self, start_date: date, end_date: date) -> List[str]:
+
+    def find_files_in_date_range(self, start_date: date, end_date: date, company: Optional[str] = None) -> List[str]:
         """Find Monitor files within a date range"""
         try:
+            company_key = (company or settings.DEFAULT_COMPANY).strip().lower()
+            company_cfg = settings.get_company_config(company_key)
+            monitor_prefix = company_cfg["monitor_prefix"]
+
             logger.info(f"Scanning Monitor folder: {self.source_path}")
-            
+
             all_files = os.listdir(self.source_path)
             logger.info(f"Found {len(all_files)} total files in folder")
-            
+
             files_to_import = []
             current_date = start_date
-            
+
             while current_date <= end_date:
                 date_str = current_date.strftime('%Y-%m-%d')
-                target_filename = f"MonitorBenettonS{date_str}F{date_str}"
-                
+                target_filename = f"{monitor_prefix}S{date_str}F{date_str}"
+
                 if target_filename in all_files:
                     filepath = os.path.join(self.source_path, target_filename)
                     file_hash = self.get_file_hash(filepath)
-                    
-                    if not self.is_already_imported(file_hash):
+
+                    if not self.is_already_imported(file_hash, company_key):
                         files_to_import.append(filepath)
                         logger.info(f"✓ Found file to import (no ext): {target_filename}")
                     else:
@@ -71,33 +77,34 @@ class MonitorImporter:
                     if target_filename_csv in all_files:
                         filepath = os.path.join(self.source_path, target_filename_csv)
                         file_hash = self.get_file_hash(filepath)
-                        
-                        if not self.is_already_imported(file_hash):
+
+                        if not self.is_already_imported(file_hash, company_key):
                             files_to_import.append(filepath)
                             logger.info(f"✓ Found file to import (.csv): {target_filename_csv}")
                         else:
                             logger.info(f"Already imported (.csv): {target_filename_csv}")
                     else:
                         logger.debug(f"File not found (tried both): {target_filename}")
-                
+
                 current_date += timedelta(days=1)
-            
+
             logger.info(f"=== TOTAL FILES TO IMPORT: {len(files_to_import)} ===")
             return files_to_import
-            
+
         except Exception as e:
             logger.error(f"Error finding files in date range: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return []
-    
-    def import_date_range(self, start_date: date, end_date: date) -> Dict:
+
+    def import_date_range(self, start_date: date, end_date: date, company: Optional[str] = None) -> Dict:
         """Import Monitor files for a date range with duplicate handling"""
         try:
-            logger.info(f"=== Starting Monitor import for {start_date} to {end_date} ===")
-            
-            filepaths = self.find_files_in_date_range(start_date, end_date)
-            
+            company_key = (company or settings.DEFAULT_COMPANY).strip().lower()
+            logger.info(f"=== Starting Monitor import [{company_key}] for {start_date} to {end_date} ===")
+
+            filepaths = self.find_files_in_date_range(start_date, end_date, company_key)
+
             if not filepaths:
                 return {
                     "success": True,
@@ -105,17 +112,17 @@ class MonitorImporter:
                     "files_imported": 0,
                     "total_records": 0
                 }
-            
+
             total_records = 0
             total_skipped = 0
             total_positions_new = 0
             total_positions_updated = 0
             files_imported = 0
-            
+
             for idx, filepath in enumerate(filepaths, 1):
                 logger.info(f"[{idx}/{len(filepaths)}] Importing: {os.path.basename(filepath)}")
-                result = self._import_file_skip_duplicates(filepath)
-                
+                result = self._import_file_skip_duplicates(filepath, company=company_key)
+
                 if result['success']:
                     files_imported += 1
                     total_records += result['records_imported']
@@ -125,11 +132,11 @@ class MonitorImporter:
                     logger.info(f"✓ Imported {result['records_imported']} records, skipped {result.get('records_skipped', 0)} duplicates")
                 else:
                     logger.error(f"✗ Failed: {result['message']}")
-            
-            logger.info(f"=== ✓✓✓ SUCCESS! Imported {files_imported} files ===")
+
+            logger.info(f"=== ✓✓✓ SUCCESS! Imported {files_imported} files [{company_key}] ===")
             logger.info(f"Total: {total_records} new records, {total_skipped} duplicates skipped")
             logger.info(f"Positions: {total_positions_new} new, {total_positions_updated} updated")
-            
+
             return {
                 "success": True,
                 "message": f"Imported {files_imported} files with {total_records} new records ({total_skipped} duplicates skipped)",
@@ -139,7 +146,7 @@ class MonitorImporter:
                 "positions_new": total_positions_new,
                 "positions_updated": total_positions_updated
             }
-            
+
         except Exception as e:
             logger.error(f"Error importing date range: {e}")
             import traceback
@@ -150,20 +157,33 @@ class MonitorImporter:
                 "files_imported": 0,
                 "total_records": 0
             }
-    
-    def _import_file_skip_duplicates(self, filepath: str) -> Dict:
+
+    def _import_file_skip_duplicates(self, filepath: str, company: Optional[str] = None) -> Dict:
         """Import single Monitor file with duplicate handling"""
+        company_key = (company or settings.DEFAULT_COMPANY).strip().lower()
+
         try:
             file_hash = self.get_file_hash(filepath)
-            
+            if self.is_already_imported(file_hash, company_key):
+                logger.info(f"File already imported [{company_key}]: {filepath}")
+                return {
+                    "success": True,
+                    "message": "File already imported (duplicate)",
+                    "records_imported": 0,
+                    "records_skipped": 0,
+                    "positions_new": 0,
+                    "positions_updated": 0
+                }
+
             df = pd.read_csv(filepath, delimiter='$', encoding='utf-8')
-            
+
             if len(df) == 0:
                 return {"success": False, "message": "No records in file", "records_imported": 0}
-            
+
             logger.info(f"Read {len(df)} rows from file")
-            
+
             import_log = ImportLog(
+                company=company_key,
                 source_type='MONITOR',
                 file_path=filepath,
                 file_hash=file_hash,
@@ -171,23 +191,20 @@ class MonitorImporter:
                 records_imported=0,
                 import_started_at=datetime.utcnow()
             )
-            
+
             with get_db_context() as db:
                 db.add(import_log)
                 db.flush()
-                
-                # Import raw data (skip duplicates)
-                raw_result = self._import_raw_data_skip_duplicates(df, filepath, db)
-                
-                # Update UDC positions (update existing)
-                position_result = self._update_positions_upsert(df, db)
-                
+
+                raw_result = self._import_raw_data_skip_duplicates(df, filepath, db, company_key)
+                position_result = self._update_positions_upsert(df, db, company_key)
+
                 import_log.records_imported = raw_result['inserted']
                 import_log.import_completed_at = datetime.utcnow()
                 import_log.status = 'SUCCESS'
-                
+
                 db.commit()
-            
+
             return {
                 "success": True,
                 "message": f"Imported {raw_result['inserted']} new records",
@@ -196,9 +213,9 @@ class MonitorImporter:
                 "positions_new": position_result['new'],
                 "positions_updated": position_result['updated']
             }
-            
+
         except Exception as e:
-            logger.error(f"Error importing file: {e}")
+            logger.error(f"Error importing file [{company_key}]: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return {
@@ -206,65 +223,67 @@ class MonitorImporter:
                 "message": f"Error: {str(e)}",
                 "records_imported": 0
             }
-    
-    def _import_raw_data_skip_duplicates(self, df: pd.DataFrame, filepath: str, db) -> Dict:
+
+    def _import_raw_data_skip_duplicates(self, df: pd.DataFrame, filepath: str, db, company_key: str) -> Dict:
         """
-        Import raw data - SKIP DUPLICATES
-        Unique key: Pallet + Articolo + DataOra
+        Import raw data - SKIP DUPLICATES (PER COMPANY)
+        Unique key: company + Pallet + Articolo + DataOra
         """
-        
+
         def safe_val(val, type_='str'):
             if pd.isna(val) or val == '':
                 return None
             if type_ == 'int':
-                try: return int(float(val))
-                except: return None
+                try:
+                    return int(float(val))
+                except Exception:
+                    return None
             elif type_ == 'float':
                 try:
                     if isinstance(val, str):
                         val = val.replace(',', '.')
                     return float(val)
-                except: return None
+                except Exception:
+                    return None
             elif type_ == 'datetime':
                 try:
                     dt = pd.to_datetime(val, errors='coerce', dayfirst=True)
                     return dt.to_pydatetime() if pd.notna(dt) else None
-                except: return None
+                except Exception:
+                    return None
             else:
                 return str(val)
-        
-        # Get existing records to check for duplicates
+
         logger.info("  Loading existing records for duplicate check...")
         existing_keys: Set[tuple] = set()
-        
+
         try:
             existing_records = db.execute(text("""
-                SELECT DISTINCT 
-                    Pallet, 
-                    Articolo, 
+                SELECT DISTINCT
+                    Pallet,
+                    Articolo,
                     CONVERT(VARCHAR(20), DataOra, 120) as DataOraStr
                 FROM import_monitor
-                WHERE Pallet IS NOT NULL
-            """)).fetchall()
-            
+                WHERE company = :company AND Pallet IS NOT NULL
+            """), {"company": company_key}).fetchall()
+
             for row in existing_records:
-                key = (str(row[0]) if row[0] else '', 
-                       str(row[1]) if row[1] else '', 
+                key = (str(row[0]) if row[0] else '',
+                       str(row[1]) if row[1] else '',
                        str(row[2]) if row[2] else '')
                 existing_keys.add(key)
         except Exception as e:
             logger.warning(f"  Could not load existing keys: {e}")
-        
+
         logger.info(f"  Found {len(existing_keys)} existing unique records")
-        
+
         records_to_insert = []
         skipped_count = 0
-        
+
         for idx, row in df.iterrows():
             if idx % 10000 == 0 and idx > 0:
                 logger.info(f"  Processing row {idx}/{len(df)}...")
-            
-            # Create unique key
+
             pallet = str(row.get('Pallet', '')) if pd.notna(row.get('Pallet')) else ''
             articolo = str(row.get('Articolo', '')) if pd.notna(row.get('Articolo')) else ''
             data_ora = ''
@@ -273,20 +292,19 @@ class MonitorImporter:
                     dt = pd.to_datetime(row.get('DataOra'), errors='coerce', dayfirst=True)
                     if pd.notna(dt):
                         data_ora = dt.strftime('%Y-%m-%d %H:%M:%S')
-                except:
+                except Exception:
                     pass
-            
+
             key = (pallet, articolo, data_ora)
-            
-            # Skip if already exists
+
             if key in existing_keys:
                 skipped_count += 1
                 continue
-            
-            # Add to existing keys
+
             existing_keys.add(key)
-            
+
             records_to_insert.append(ImportMonitor(
+                company=company_key,
                 DataOra=safe_val(row.get('DataOra'), 'datetime'),
                 Movimento=safe_val(row.get('Movimento')),
                 Pallet=safe_val(row.get('Pallet')),
@@ -320,33 +338,32 @@ class MonitorImporter:
                 DeltaQTA=safe_val(row.get('DeltaQTA'), 'float'),
                 source_file=filepath
             ))
-        
-        # Bulk insert new records
+
         if records_to_insert:
             batch_size = 1000
             for i in range(0, len(records_to_insert), batch_size):
-                batch = records_to_insert[i:i+batch_size]
+                batch = records_to_insert[i:i + batch_size]
                 db.bulk_save_objects(batch)
             db.flush()
-        
+
         logger.info(f"  Inserted {len(records_to_insert)} new records, skipped {skipped_count} duplicates")
         return {"inserted": len(records_to_insert), "skipped": skipped_count}
-    
-    def _update_positions_upsert(self, df: pd.DataFrame, db) -> Dict:
+
+    def _update_positions_upsert(self, df: pd.DataFrame, db, company_key: str) -> Dict:
         """
-        Update UDC positions - UPSERT (Insert or Update)
+        Update UDC positions - UPSERT (Insert or Update) (PER COMPANY)
         Updates existing positions with latest data
         """
-        
+
         df_sorted = df.copy()
         if 'DataOra' in df_sorted.columns:
             df_sorted['DataOra'] = pd.to_datetime(df_sorted['DataOra'], errors='coerce', dayfirst=True)
         df_sorted = df_sorted.sort_values('DataOra', ascending=False, na_position='last')
         latest_positions = df_sorted.drop_duplicates(subset=['Pallet'], keep='first')
-        
+
         positions_new = 0
         positions_updated = 0
-        
+
         def coerce_dt(value):
             if value is None:
                 return None
@@ -355,37 +372,38 @@ class MonitorImporter:
             try:
                 dt = pd.to_datetime(value, errors='coerce', dayfirst=True)
                 return dt.to_pydatetime() if pd.notna(dt) else None
-            except:
+            except Exception:
                 return None
-        
+
         for _, row in latest_positions.iterrows():
             udc = row.get('Pallet')
             if pd.isna(udc):
                 continue
-            
+
             udc = str(udc)
-            
+
             position_parts = []
             for col in ['Mag', 'Scaf', 'Col', 'Pia']:
                 val = row.get(col)
                 if pd.notna(val) and str(val).strip():
                     position_parts.append(str(val))
-            
+
             position_code = '-'.join(position_parts) if position_parts else 'UNKNOWN'
-            
-            data_ora = row.get('DataOra')
-            last_movement = coerce_dt(data_ora)
-            
-            # Try to find existing location
-            location = db.query(UDCLocation).filter(UDCLocation.udc == udc).first()
-            
+
+            last_movement = coerce_dt(row.get('DataOra'))
+
+            # composite PK lookup
+            location = db.query(UDCLocation).filter(
+                UDCLocation.company == company_key,
+                UDCLocation.udc == udc
+            ).first()
+
             if location:
-                # UPDATE existing - only if new data is more recent
                 should_update = True
                 loc_last = coerce_dt(location.last_movement)
                 if loc_last and last_movement:
                     should_update = last_movement >= loc_last
-                
+
                 if should_update:
                     location.mag = str(row['Mag']) if pd.notna(row.get('Mag')) else None
                     location.scaf = str(row['Scaf']) if pd.notna(row.get('Scaf')) else None
@@ -398,8 +416,8 @@ class MonitorImporter:
                     location.last_updated = datetime.utcnow()
                     positions_updated += 1
             else:
-                # INSERT new
                 location = UDCLocation(
+                    company=company_key,
                     udc=udc,
                     mag=str(row['Mag']) if pd.notna(row.get('Mag')) else None,
                     scaf=str(row['Scaf']) if pd.notna(row.get('Scaf')) else None,
@@ -412,36 +430,40 @@ class MonitorImporter:
                 )
                 db.add(location)
                 positions_new += 1
-        
+
         db.flush()
         logger.info(f"  UDC positions: {positions_new} new, {positions_updated} updated")
         return {"new": positions_new, "updated": positions_updated}
-    
+
     def _extract_date_from_filename(self, filename: str) -> Optional[date]:
         """Extract date from filename"""
         try:
             filename = filename.replace('.csv', '')
             date_str = filename.split('S')[1].split('F')[0]
             return datetime.strptime(date_str, '%Y-%m-%d').date()
-        except:
+        except Exception:
             return None
-    
-    def import_yesterday(self) -> Dict:
+
+    def import_yesterday(self, company: Optional[str] = None) -> Dict:
         """Find and import yesterday's Monitor file"""
         try:
+            company_key = (company or settings.DEFAULT_COMPANY).strip().lower()
+            company_cfg = settings.get_company_config(company_key)
+            monitor_prefix = company_cfg["monitor_prefix"]
+
             yesterday = (datetime.now().date() - timedelta(days=1)).strftime('%Y-%m-%d')
-            
-            target_filename = f"MonitorBenettonS{yesterday}F{yesterday}"
+
+            target_filename = f"{monitor_prefix}S{yesterday}F{yesterday}"
             filepath = os.path.join(self.source_path, target_filename)
-            
+
             if not os.path.exists(filepath):
                 filepath = f"{filepath}.csv"
-            
+
             if os.path.exists(filepath):
-                logger.info(f"Found yesterday's Monitor file: {os.path.basename(filepath)}")
-                return self._import_file_skip_duplicates(filepath)
+                logger.info(f"Found yesterday's Monitor file [{company_key}]: {os.path.basename(filepath)}")
+                return self._import_file_skip_duplicates(filepath, company=company_key)
             else:
-                logger.warning(f"Yesterday's Monitor file not found")
+                logger.warning(f"Yesterday's Monitor file not found [{company_key}]")
                 return {
                     "success": False,
                     "message": "Yesterday's Monitor file not found (may be weekend/holiday)",
